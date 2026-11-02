@@ -115,3 +115,55 @@ def test_rerun_uses_previous_answers(tmp_path):
 def test_yes_without_required_answer_fails(tmp_path):
     with pytest.raises(SystemExit):
         run(tmp_path, where="vps", run="systemd", proxy="nginx")  # no domain
+
+
+# ------------------------------------------------------------ progress output
+def run_interactive(tmp_path, monkeypatch, capsys, replies, **flags):
+    replies = iter(replies)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    p = argparse.ArgumentParser()
+    setup_wizard.add_arguments(p)
+    argv = ["--output-dir", str(tmp_path / "out"), "--config-dir", str(tmp_path / "cfg"), "--home", str(tmp_path / "home")]
+    for k, v in flags.items():
+        argv += [f"--{k.replace('_', '-')}", str(v)]
+    assert setup_wizard.run(p.parse_args(argv)) == 0
+    return capsys.readouterr().out
+
+
+def headers(out):
+    return [line for line in out.splitlines() if line.startswith("Question ")]
+
+
+def test_question_counter_local(tmp_path, monkeypatch, capsys):
+    out = run_interactive(tmp_path, monkeypatch, capsys, ["1", "1", "1"])  # local, linux, manual
+    assert headers(out) == ["Question 1 of 3", "Question 2 of 3", "Question 3 of 3"]
+
+
+def test_question_counter_grows_with_answers(tmp_path, monkeypatch, capsys):
+    # vps -> systemd -> caddy (adds domain, https, sub-path) -> domain -> https -> base path -> auth via proxy
+    out = run_interactive(tmp_path, monkeypatch, capsys, ["2", "1", "2", "mon.example.com", "1", "", "2"])
+    assert headers(out) == ["Question 1 of 3", "Question 2 of 4", "Question 3 of 4", "Question 4 of 7",
+                            "Question 5 of 7", "Question 6 of 7", "Question 7 of 7"]
+
+
+def test_question_counter_both(tmp_path, monkeypatch, capsys):
+    # both -> tmux -> ssh tunnel -> proxy auth -> linux -> manual
+    out = run_interactive(tmp_path, monkeypatch, capsys, ["3", "4", "1", "2", "1", "1"])
+    assert headers(out)[-1] == "Question 6 of 6"
+
+
+def test_flags_are_not_counted(tmp_path, monkeypatch, capsys):
+    out = run_interactive(tmp_path, monkeypatch, capsys, ["4", "1", "2"], where="vps")  # tmux, none, proxy auth
+    assert headers(out) == ["Question 1 of 3", "Question 2 of 3", "Question 3 of 3"]
+
+
+def test_numbered_file_lines_and_quiet_yes_mode(tmp_path, capsys):
+    run(tmp_path, where="vps", run="systemd", proxy="nginx", domain="x.example.com", https="have", auth="builtin")
+    out = capsys.readouterr().out
+    assert "Question" not in out                      # --yes: no prompts or counters
+    lines = [l.strip() for l in out.splitlines() if l.strip().startswith("[")]
+    assert [l.split()[0] for l in lines] == ["[1/3]", "[2/3]", "[3/3]"]
+    assert all(" wrote " in l for l in lines)
+    assert "\x1b" not in out                          # no escape codes in CI logs
+    run(tmp_path, where="vps", run="systemd", proxy="nginx", domain="x.example.com", https="have", auth="builtin")
+    assert "[1/3] unchanged" in capsys.readouterr().out

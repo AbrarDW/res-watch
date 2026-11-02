@@ -141,7 +141,15 @@ def main(argv=None) -> int:
         return cmd_hash_password(args)
     if args.cmd == "setup":
         from .setup_wizard import run
-        return run(args)
+        try:
+            return run(args)
+        except EOFError:
+            print("\nerror: no answer received (stdin is closed). For unattended installs pass the answers as "
+                  "flags with --yes, e.g.  --yes --where local --start manual", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            print("\nsetup cancelled; nothing else was changed.", file=sys.stderr)
+            return 130
     return cmd_serve(args)
 
 

@@ -30,6 +30,8 @@ The setup script creates `.venv`, installs the dependencies (plus GPU support wh
 2. **Local:** which OS, and how it should start: manually, at login (systemd user service, LaunchAgent or Task Scheduler), or with Docker.
 3. **VPS:** how it runs (systemd, `docker run`, Docker Compose or tmux), what sits in front (SSH tunnel, Caddy, nginx, Traefik, Apache, Cloudflare Tunnel/Access or other), whether HTTPS and a domain are already set up, and whether to use the built-in login or your proxy's SSO.
 
+The script shows numbered steps (`[1/5] Checking Python` … `[5/5] Running the setup wizard`). In a terminal, the steps that print nothing show a spinner and pip shows its progress bars; with `--yes`, piped output, or `CI` set, the output is plain text so logs stay clean. The wizard shows `Question X of Y`, where Y updates as your answers open or skip follow-up questions. It lists each file as `[i/N] wrote …`.
+
 It generates **only** the files that match your answers and prints the next steps. Re-run it any time; your previous answers become the defaults, and it shows a diff before it changes a file.
 
 Every question has a flag, so setup can also run without prompts:

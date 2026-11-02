@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import default_config_dir, normalize_base_path, read_toml, write_toml
+from .config import default_config_dir, normalize_base_path, read_toml, toml_text
 
 PROJECT = Path(__file__).resolve().parent.parent
 TEMPLATES = Path(__file__).resolve().parent / "templates"
@@ -91,6 +91,7 @@ class Out:
     content: str
     what: str
     mode: int | None = None
+    ask: bool = True          # show a diff and ask before overwriting a changed file
 
 
 @dataclass
@@ -103,11 +104,55 @@ class Plan:
 
 
 # --------------------------------------------------------------- prompts
+NAMED_PROXIES = ("caddy", "nginx", "traefik", "apache", "cloudflare")
+
+
+def question_keys(ans: dict) -> list[str]:
+    """Every question the wizard will ask, in order, given the (known or assumed) answers."""
+    keys = ["where"]
+    where = ans.get("where")
+    if where in ("vps", "both"):
+        keys += ["run", "proxy"]
+        proxy = ans.get("proxy") or "none"
+        if proxy != "none":
+            if proxy in NAMED_PROXIES:
+                keys.append("domain")
+            if proxy != "cloudflare":
+                keys.append("https")
+            keys.append("base_path")
+        keys.append("auth")
+    if where in ("local", "both"):
+        keys += ["os", "start"]
+    return keys
+
+
 class Asker:
     def __init__(self, args, previous: dict):
         self.args, self.prev = args, previous
         self.file = read_toml(Path(args.answers)) if getattr(args, "answers", None) else {}
         self.answers: dict = {}
+        self._prompted: set[str] = set()
+
+    def progress(self, key: str) -> tuple[int, int]:
+        """(X, Y) for "Question X of Y". Only questions that will actually be prompted are counted;
+        branching answers not given yet are assumed to be their defaults, so Y can change as you answer."""
+        assumed = {"where": self.prev.get("setup_where", "local"), "proxy": self.prev.get("setup_proxy", "none")}
+        for k in assumed:
+            if self._given(k) is not None:
+                assumed[k] = self._given(k)
+        keys = question_keys({**assumed, **self.answers})
+        def prompted(k):
+            if k in self.answers:          # already answered: count it only if we asked it
+                return k in self._prompted
+            return self._given(k) is None  # still to come: asked unless a flag/answers file covers it
+        asked = [k for k in keys if prompted(k)]
+        x = asked.index(key) + 1 if key in asked else len(asked)
+        return x, len(asked)
+
+    def _header(self, key: str) -> None:
+        self._prompted.add(key)
+        x, y = self.progress(key)
+        print(f"\nQuestion {x} of {y}")
 
     def _given(self, key):
         attr = "os_" if key == "os" else key
@@ -126,7 +171,8 @@ class Asker:
                     raise SystemExit(f"error: --{key.replace('_', '-')} is required with --yes ({'|'.join(valid)})")
                 v = default
             else:
-                print(f"\n{question}")
+                self._header(key)
+                print(question)
                 for i, (val, label, desc) in enumerate(options, 1):
                     mark = " (default)" if val == default else ""
                     print(f"  {i}) {label}{mark}" + (f" — {desc}" if desc else ""))
@@ -154,7 +200,8 @@ class Asker:
             if self.args.yes:
                 v = default
             else:
-                v = input(f"\n{question}" + (f" [{default}]" if default else "") + ": ").strip() or default
+                self._header(key)
+                v = input(question + (f" [{default}]" if default else "") + ": ").strip() or default
         if required and not v:
             raise SystemExit(f"error: {key} is required (--{key.replace('_', '-')})")
         self.answers[key] = v
@@ -403,25 +450,29 @@ def proxy_files(plan: Plan, deploy: Path, proxy, domain, base, port, https, run)
 
 # -------------------------------------------------------------- writing
 def write_files(a: Asker, files: list[Out]) -> list[Path]:
-    written = []
-    for f in files:
+    """Write files, printing "[i/N] wrote|unchanged|skipped <path>" for each."""
+    written, n = [], len(files)
+    width = len(str(n))
+    for i, f in enumerate(files, 1):
+        tag = f"  [{i:>{width}}/{n}]"
         if f.path.exists():
             old = f.path.read_text(encoding="utf-8", errors="replace")
             if old == f.content:
-                print(f"  unchanged  {f.path}")
+                print(f"{tag} unchanged  {f.path}")
                 continue
-            if not a.args.yes:
+            if f.ask and not a.args.yes:
                 diff = difflib.unified_diff(old.splitlines(), f.content.splitlines(), str(f.path), "new", lineterm="")
                 print("\n".join(list(diff)[:80]))
                 if not a.confirm(f"Overwrite {f.path}?", True):
-                    print(f"  skipped    {f.path}")
+                    print(f"{tag} skipped    {f.path}")
                     continue
-            shutil.copy2(f.path, f.path.with_name(f.path.name + ".bak"))
+            if f.ask:
+                shutil.copy2(f.path, f.path.with_name(f.path.name + ".bak"))
         f.path.parent.mkdir(parents=True, exist_ok=True)
         f.path.write_text(f.content, encoding="utf-8")
         if f.mode is not None:
             os.chmod(f.path, f.mode)
-        print(f"  wrote      {f.path}  ({f.what})")
+        print(f"{tag} wrote      {f.path}  ({f.what})")
         written.append(f.path)
     return written
 
@@ -459,13 +510,12 @@ def run(args) -> int:
     else:
         plan_local(a, plan, out_dir, home, port)
 
-    print("\nGenerating files:" if plan.files else "\nNo extra files needed for these answers.")
-    write_files(a, plan.files)
-
     cfg = dict(plan.config)
     cfg.update({f"setup_{k}": v for k, v in a.answers.items() if v not in (None, "")})
-    write_toml(cfg_path, cfg, header=HEADER + "\n# Read by `python -m reswatch`; CLI flags and RESWATCH_* env vars override it.")
-    print(f"  wrote      {cfg_path}  (settings + your answers)")
+    cfg_text = toml_text(cfg, header=HEADER + "\n# Read by `python -m reswatch`; CLI flags and RESWATCH_* env vars override it.")
+    files = plan.files + [Out(cfg_path, cfg_text, "settings + your answers", ask=False)]
+    print(f"\nWriting {len(files)} file{'s' if len(files) != 1 else ''}:" + ("" if plan.files else "  (no deploy files needed for these answers)"))
+    write_files(a, files)
 
     if plan.set_password:
         from .auth import auth_file
@@ -496,5 +546,5 @@ def run(args) -> int:
     print("\nNext steps:")
     for i, s in enumerate(plan.steps, 1):
         print(f"  {i}. {s}")
-    print("\nDetails: README.md (“Running locally” / “Running on a VPS”). Re-run `python -m reswatch setup` any time.")
+    print("\nDetails: README.md ('Running locally' / 'Running on a VPS'). Re-run `python -m reswatch setup` any time.")
     return 0

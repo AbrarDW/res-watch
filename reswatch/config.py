@@ -124,7 +124,7 @@ def read_toml(path: Path) -> dict:
     return out
 
 
-def write_toml(path: Path, data: dict, header: str = "") -> None:
+def toml_text(data: dict, header: str = "") -> str:
     lines = [header.rstrip()] if header else []
     for k, v in data.items():
         if isinstance(v, bool):
@@ -134,8 +134,12 @@ def write_toml(path: Path, data: dict, header: str = "") -> None:
         else:
             s = '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
         lines.append(f"{k} = {s}")
+    return "\n".join(lines) + "\n"
+
+
+def write_toml(path: Path, data: dict, header: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text(toml_text(data, header), encoding="utf-8")
 
 
 def load_settings(cli: dict | None = None, env: dict | None = None) -> Settings:
