@@ -288,3 +288,13 @@ table.ptable { width: 100%; border-collapse: collapse; }
 .login-card input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .login-card .btn.primary { width: 100%; margin-top: 18px; padding: 9px; font-weight: 600; }
 .login-err { color: var(--crit); font-size: 12px; min-height: 18px; margin-top: 10px; }
+
+/* ---------- multi-selection views ---------- */
+.segbar { display: flex; height: 4px; margin-top: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.segbar i { display: block; height: 100%; }
+.stats6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.dsec { display: flex; flex-direction: column; gap: 12px; }
+#details { display: flex; flex-direction: column; gap: 18px; }
+.chip { cursor: default; }
+@media (max-width: 1100px) { .stats6 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 768px) { .stats6 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

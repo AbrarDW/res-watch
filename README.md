@@ -6,7 +6,8 @@ See what each **app or process** on a machine is using, live: CPU (including **p
 
 - **Apps / Processes / Tree** sidebar. Processes are grouped into apps, for example all 23 Chrome processes become one `chrome` app. You can chart a whole app, a single process, or a mix of both.
 - **Filters:** mine/all/system users, hide kernel threads and system services, GPU users only, minimum CPU %, and process status. They are remembered in the browser.
-- **CPU per core:** bars, a core × time heatmap, and a rotatable 3D view. Per-process per-core usage is Linux only, see [Notes](#notes).
+- **Everything you select is shown together:** tick several apps and/or processes and each one gets its own colour in every chart and its own section in Details.
+- **CPU per core:** bars stacked by selection over whole-system usage, one core × time heatmap per selection, and a rotatable 3D view stacked by selection. Per-process per-core usage is Linux only, see [Notes](#notes).
 - **GPU:** utilisation, memory, temperature, power, and the SM, memory, encoder and decoder engines, plus GPU use per process. NVIDIA is supported via NVML; AMD support is best effort via `amdsmi`.
 - **Details:** for an app, CPU per member process and a memory treemap; for a process, its command line, user, threads and open files.
 - **Built-in login** for remote servers. It is off on localhost.
