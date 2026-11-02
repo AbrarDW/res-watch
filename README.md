@@ -138,6 +138,8 @@ sudo ufw enable
 
 ## Development
 
+What's left to do, and in what order, is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest
