@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>res-watch mockup</title>
+<link rel="stylesheet" href="../static/style.css">
+<script src="../static/vendor/echarts.min.js"></script>
+<script src="../static/vendor/echarts-gl.min.js"></script>
+</head>
+<body>
+<!--
+  Static design mockup with fake data. Query params:
+    tab=overview|cpu|gpu|details   view=bars|heatmap|3d (cpu) / 2d|3d (gpu)
+    theme=light|dark   empty=1   mview=list|charts (mobile panel)
+-->
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span>res-watch</div>
+    <div class="meters" id="meters"></div>
+    <div class="corestrip" id="corestrip" title="System usage per logical core"></div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <select class="btn optional"><option>1 s</option><option>2 s</option><option>5 s</option></select>
+      <button class="btn optional">⏸ Pause</button>
+      <button class="btn" title="Toggle theme">☾ Theme</button>
+    </div>
+  </header>
+  <nav class="mobile-tabs" id="mtabs">
+    <button data-v="list">Processes</button><button data-v="charts">Charts</button>
+  </nav>
+  <div class="body" id="body">
+    <aside class="sidebar">
+      <div class="side-head">
+        <div class="side-title"><h2>Processes</h2><span class="faint num">312 running</span></div>
+        <input class="search" placeholder="Search name or PID…">
+      </div>
+      <div class="ptable-wrap">
+        <table class="ptable">
+          <thead><tr>
+            <th class="l" style="width:22px"></th><th class="l">PID</th><th class="l">Name</th>
+            <th class="sorted">CPU % ▾</th><th>Mem</th><th>GPU %</th>
+          </tr></thead>
+          <tbody id="ptbody"></tbody>
+        </table>
+      </div>
+      <div class="side-foot"><span>Sort: CPU</span><span>⟳ every 3 s</span></div>
+    </aside>
+
+    <main class="main" id="main"></main>
+  </div>
+</div>
+
+<script>
+const P = new URLSearchParams(location.search);
+const TAB = P.get('tab') || 'overview';
+const VIEW = P.get('view') || (TAB === 'gpu' ? '2d' : 'bars');
+const EMPTY = P.get('empty') === '1';
+if (P.get('theme')) document.documentElement.dataset.theme = P.get('theme');
+document.getElementById('body').dataset.mview = P.get('mview') || 'charts';
+document.querySelectorAll('#mtabs button').forEach(b => b.classList.toggle('on', b.dataset.v === (P.get('mview') || 'charts')));
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = {
+  text: css('--text'), text2: css('--text-2'), text3: css('--text-3'), grid: css('--grid'), border: css('--border'),
+  surface: css('--surface'), ghost: css('--ghost'),
+  s: [1,2,3,4,5,6,7,8].map(i => css('--s' + i)),
+  q: [0,1,2,3,4,5].map(i => css('--q' + i)),
+};
+
+// ---------- deterministic fake data ----------
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const N = 60, CORES = 16;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const walk = (base, amp, lo = 0, hi = 100) => { let v = base; return Array.from({length: N}, () => (v = clamp(v + (rnd() - 0.5) * amp + (base - v) * 0.15, lo, hi))); };
+
+const procs = [
+  {pid: 9134, name: 'python',   user: 'abi',  cpu: 121.0, mem: '3.1 G', gpu: 68, sel: 1, cmd: 'python train.py --epochs 40 --batch 64', threads: 9, up: '5m 02s'},
+  {pid: 4821, name: 'chrome',   user: 'abi',  cpu: 34.2,  mem: '1.2 G', gpu: 4,  sel: 2, cmd: '/opt/google/chrome/chrome --type=renderer', threads: 42, up: '2h 14m'},
+  {pid: 1022, name: 'code',     user: 'abi',  cpu: 8.7,   mem: '860 M', gpu: 0},
+  {pid: 5560, name: 'node',     user: 'abi',  cpu: 6.3,   mem: '412 M', gpu: null},
+  {pid: 733,  name: 'postgres', user: 'postgres', cpu: 2.1, mem: '120 M', gpu: null},
+  {pid: 2877, name: 'Xorg',     user: 'root', cpu: 1.8,   mem: '96 M',  gpu: 2},
+  {pid: 1408, name: 'pipewire', user: 'abi',  cpu: 0.9,   mem: '24 M',  gpu: null},
+  {pid: 1,    name: 'systemd',  user: 'root', cpu: 0.0,   mem: '12 M',  gpu: null},
+  {pid: 2210, name: 'sshd',     user: 'root', cpu: 0.0,   mem: '8 M',   gpu: null},
+  {pid: 612,  name: 'dockerd',  user: 'root', cpu: 0.4,   mem: '88 M',  gpu: null},
+  {pid: 3051, name: 'kworker/3:1', user: 'root', denied: true},
+  {pid: 3077, name: 'kworker/7:0', user: 'root', denied: true},
+  {pid: 845,  name: 'NetworkManager', user: 'root', cpu: 0.1, mem: '18 M', gpu: null},
+  {pid: 990,  name: 'gnome-shell', user: 'abi', cpu: 3.4, mem: '310 M', gpu: 1},
+  {pid: 1777, name: 'slack',    user: 'abi',  cpu: 1.2,   mem: '540 M', gpu: 0},
+  {pid: 6020, name: 'bash',     user: 'abi',  cpu: 0.0,   mem: '5 M',   gpu: null},
+];
+const selected = EMPTY ? [] : procs.filter(p => p.sel).sort((a, b) => a.sel - b.sel);
+selected.forEach((p, i) => p.color = C.s[i]);
+const focus = selected[0];
+
+const sysCores = Array.from({length: CORES}, (_, i) => [62, 18, 25, 96, 14, 9, 31, 22, 12, 28, 8, 88, 20, 11, 35, 15][i]);
+// python: 1 hot core (C3) + C11 busy + light spread; chrome: light spread
+const procCoreNow = {
+  9134: sysCores.map((v, i) => i === 3 ? 92 : i === 11 ? 71 : i === 0 ? 14 : rnd() < 0.4 ? rnd() * 6 : 0),
+  4821: sysCores.map((v, i) => [0, 6, 14].includes(i) ? 8 + rnd() * 10 : rnd() * 3),
+};
+const coreHist = Array.from({length: CORES}, (_, c) => walk(procCoreNow[9134][c], c === 3 || c === 11 ? 18 : 6, 0, 100));
+coreHist[3] = coreHist[3].map(v => clamp(v + 10, 0, 100));
+const timeLabels = Array.from({length: N}, (_, i) => i === N - 1 ? 'now' : `-${N - 1 - i}s`);
+
+// ---------- top bar ----------
+const ringCls = v => v > 90 ? 'crit' : v > 70 ? 'warn' : '';
+function meter(label, value, pct, extra = '') {
+  return `<div class="meter ${extra}"><div class="ring ${ringCls(pct)}" style="--v:${pct}"></div>
+    <div><div class="meter-label">${label}</div><div class="meter-value num">${value}</div></div></div>`;
+}
+document.getElementById('meters').innerHTML =
+  meter('CPU', '58%', 58) + meter('RAM', '11.2 / 16 GB', 70, 'optional') + meter('GPU0 · RTX 4070', '72% · 6.1/12 GB', 72);
+document.getElementById('corestrip').innerHTML = sysCores.map((v, i) => `<i title="C${i} ${v}%" style="height:${Math.max(8, v)}%"></i>`).join('');
+
+// ---------- process table ----------
+document.getElementById('ptbody').innerHTML = procs.map(p => `
+  <tr class="${p.sel && !EMPTY ? 'sel' : ''}" style="${p.color ? `--c:${p.color}` : ''}">
+    <td class="l"><span class="chk"></span></td>
+    <td class="l mono faint">${p.pid}</td>
+    <td class="l name" title="${p.name}">${p.denied ? '🔒 ' : ''}${p.name}</td>
+    ${p.denied
+      ? '<td class="denied">n/a</td><td class="denied">n/a</td><td class="denied">–</td>'
+      : `<td class="bar-cell">${p.cpu.toFixed(1)}<span class="b" style="width:${Math.min(60, p.cpu / 2)}px"></span></td>
+         <td>${p.mem}</td><td class="${p.gpu == null ? 'faint' : ''}">${p.gpu == null ? '–' : p.gpu}</td>`}
+  </tr>`).join('');
+
+// ---------- main ----------
+const main = document.getElementById('main');
+const charts = [];
+const mk = (id, opt) => { const c = echarts.init(document.getElementById(id), null, {renderer: 'canvas'}); c.setOption(opt); charts.push(c); return c; };
+addEventListener('resize', () => charts.forEach(c => c.resize()));
+
+const baseAxis = {
+  axisLine: {lineStyle: {color: C.border}}, axisTick: {show: false},
+  axisLabel: {color: C.text3, fontSize: 11}, splitLine: {lineStyle: {color: C.grid}},
+};
+const tip = {trigger: 'axis', backgroundColor: C.surface, borderColor: C.border, textStyle: {color: C.text, fontSize: 12}};
+const lineOpt = (series, {unit = '', max} = {}) => ({
+  animation: false, grid: {left: 44, right: 12, top: 12, bottom: 24}, tooltip: tip,
+  xAxis: {type: 'category', data: timeLabels, boundaryGap: false, ...baseAxis, splitLine: {show: false},
+          axisLabel: {...baseAxis.axisLabel, interval: 14}},
+  yAxis: {type: 'value', max, ...baseAxis, axisLine: {show: false}, axisLabel: {...baseAxis.axisLabel, formatter: v => v + unit}},
+  series: series.map(s => ({type: 'line', showSymbol: false, smooth: 0.3, lineStyle: {width: 2}, ...s})),
+});
+
+function focusBar() {
+  return `<div class="focusbar">
+    <span class="faint">Focus</span>
+    ${selected.map((p, i) => `<span class="chip ${i === 0 ? 'active' : ''}" style="--c:${p.color}"><span class="dot"></span>${p.name} <span class="faint mono">${p.pid}</span><span class="x">×</span></span>`).join('')}
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn">Compare</button><button class="btn">Clear</button>
+  </div>
+  <div class="tabs">
+    ${[['overview','Overview'],['cpu','CPU per core'],['gpu','GPU'],['details','Details']].map(([k, l]) => `<button class="tab ${k === TAB ? 'active' : ''}">${l}</button>`).join('')}
+  </div>`;
+}
+const legend = items => `<div class="legend">${items.map(([l, c, cls]) => `<span><i class="${cls || ''}" style="--c:${c}"></i>${l}</span>`).join('')}</div>`;
+const procLegend = () => legend(selected.map(p => [`${p.name} ${p.pid}`, p.color]));
+
+if (EMPTY) {
+  main.innerHTML = `<div class="empty"><div>
+    <div class="ill"><svg width="40" height="40" viewBox="0 0 40 40" fill="none" stroke="${C.s[0]}" stroke-width="2.5" stroke-linecap="round"><path d="M6 32h28"/><path d="M10 26l7-8 6 5 9-12"/></svg></div>
+    <h2>No process selected</h2>
+    <p>Tick one or more processes on the left to see live CPU, per-core, GPU, memory and disk charts.</p>
+  </div></div>`;
+} else if (TAB === 'overview') {
+  main.innerHTML = focusBar() + `
+    <div class="toolbar"><label><input type="checkbox" checked> Include child processes</label>
+      <label><input type="checkbox"> Normalise CPU by cores</label><span class="spacer" style="flex:1"></span>${procLegend()}</div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><h3>CPU</h3><span class="sub">% of one core · last 60 s</span></div><div class="chart" id="c-cpu"></div></div>
+      <div class="card"><div class="card-h"><h3>GPU</h3><span class="sub">SM utilisation · GPU0</span></div><div class="chart" id="c-gpu"></div></div>
+      <div class="card"><div class="card-h"><h3>Memory</h3><span class="sub">resident set size</span></div><div class="chart" id="c-mem"></div></div>
+      <div class="card"><div class="card-h"><h3>Disk I/O</h3><span class="sub">KB/s · solid = read, dashed = write</span></div><div class="chart" id="c-io"></div></div>
+    </div>
+    <div class="grid g2">
+      ${selected.map(p => `<div class="card"><div class="card-h"><h3><span style="color:${p.color}">●</span> ${p.name} <span class="faint mono">${p.pid}</span></h3><span class="badge ok">running</span></div>
+        <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+          <div class="stat"><div class="k">CPU</div><div class="v num">${p.cpu}%</div></div>
+          <div class="stat"><div class="k">Memory</div><div class="v num">${p.mem}</div></div>
+          <div class="stat"><div class="k">GPU</div><div class="v num">${p.gpu}%</div></div>
+          <div class="stat"><div class="k">Threads</div><div class="v num">${p.threads}</div></div>
+        </div><div class="faint mono" style="margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.cmd}</div></div>`).join('')}
+    </div>`;
+  const cpuA = walk(118, 30, 60, 160), cpuB = walk(34, 14, 10, 70);
+  mk('c-cpu', lineOpt([{name: 'python', data: cpuA, color: selected[0].color, areaStyle: {opacity: 0.08}},
+                       {name: 'chrome', data: cpuB, color: selected[1].color}], {unit: '%'}));
+  mk('c-gpu', lineOpt([{name: 'python', data: walk(68, 20, 30, 98), color: selected[0].color, areaStyle: {opacity: 0.08}},
+                       {name: 'chrome', data: walk(4, 4, 0, 12), color: selected[1].color}], {unit: '%', max: 100}));
+  let m = 2.6; const memA = Array.from({length: N}, () => (m = Math.min(3.1, m + rnd() * 0.02)));
+  mk('c-mem', lineOpt([{name: 'python', data: memA, color: selected[0].color, areaStyle: {opacity: 0.08}},
+                       {name: 'chrome', data: walk(1.2, 0.05, 1.1, 1.3), color: selected[1].color}], {unit: ' G'}));
+  mk('c-io', lineOpt([{name: 'python read', data: walk(820, 600, 0, 2400), color: selected[0].color},
+                      {name: 'python write', data: walk(260, 300, 0, 900), color: selected[0].color, lineStyle: {width: 2, type: 'dashed'}},
+                      {name: 'chrome read', data: walk(60, 80, 0, 300), color: selected[1].color},
+                      {name: 'chrome write', data: walk(30, 40, 0, 150), color: selected[1].color, lineStyle: {width: 2, type: 'dashed'}}]));
+} else if (TAB === 'cpu') {
+  main.innerHTML = focusBar() + `
+    <div class="toolbar">
+      <div class="seg">${[['bars','Bars'],['heatmap','Heatmap'],['3d','3D']].map(([k, l]) => `<button class="${k === VIEW ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <span class="faint">${focus.name} ${focus.pid} · 9 threads on 16 logical cores</span>
+      <span class="spacer" style="flex:1"></span>
+      ${VIEW === 'bars' ? legend([['this process', focus.color], ['whole system', '', 'ghost']])
+        : `<span class="ramp">0% <b></b> 100%</span>`}
+      ${VIEW === '3d' ? '<button class="btn">⟲ Auto-rotate</button><button class="btn">Reset view</button>' : ''}
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>${VIEW === 'bars' ? 'Usage per logical core — now' : VIEW === 'heatmap' ? 'Usage per core over the last 60 s' : '3D · core × time × usage'}</h3>
+        <span class="sub">${VIEW === '3d' ? 'drag to rotate · scroll to zoom' : 'Linux: thread CPU time attributed to the core it last ran on'}</span></div>
+      <div class="chart ${VIEW === '3d' ? 'xl' : 'tall'}" id="c-main"></div>
+    </div>
+    <div class="card"><div class="card-h"><h3>Cores</h3><span class="sub">${focus.name} share of each core · sparkline = last 60 s</span></div>
+      <div class="cores" id="cores"></div></div>`;
+  const cats = sysCores.map((_, i) => 'C' + i);
+  if (VIEW === 'bars') {
+    mk('c-main', {
+      animation: false, grid: {left: 44, right: 12, top: 16, bottom: 28}, tooltip: {...tip, axisPointer: {type: 'shadow'}},
+      xAxis: {type: 'category', data: cats, ...baseAxis, splitLine: {show: false}},
+      yAxis: {type: 'value', max: 100, ...baseAxis, axisLine: {show: false}, axisLabel: {...baseAxis.axisLabel, formatter: '{value}%'}},
+      series: [
+        {name: 'system', type: 'bar', data: sysCores, barWidth: '58%', itemStyle: {color: C.ghost, borderRadius: [4, 4, 0, 0]}, z: 1},
+        {name: focus.name, type: 'bar', data: procCoreNow[focus.pid].map(v => +v.toFixed(1)), barWidth: '38%', barGap: '-82%',
+         itemStyle: {color: focus.color, borderRadius: [4, 4, 0, 0]}, z: 2,
+         label: {show: true, position: 'top', color: C.text2, fontSize: 11, formatter: p => p.value >= 10 ? Math.round(p.value) + '%' : ''}},
+      ],
+    });
+  } else if (VIEW === 'heatmap') {
+    const data = [];
+    coreHist.forEach((row, c) => row.forEach((v, t) => data.push([t, c, +v.toFixed(1)])));
+    mk('c-main', {
+      animation: false, grid: {left: 44, right: 16, top: 8, bottom: 28},
+      tooltip: {backgroundColor: C.surface, borderColor: C.border, textStyle: {color: C.text}, formatter: p => `C${p.value[1]} · ${timeLabels[p.value[0]]}: <b>${p.value[2]}%</b>`},
+      xAxis: {type: 'category', data: timeLabels, ...baseAxis, splitLine: {show: false}, axisLabel: {...baseAxis.axisLabel, interval: 9}},
+      yAxis: {type: 'category', data: cats, inverse: true, ...baseAxis, splitLine: {show: false}},
+      visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q}},
+      series: [{type: 'heatmap', data, itemStyle: {borderColor: C.surface, borderWidth: 1}}],
+    });
+  } else {
+    const data = [];
+    coreHist.forEach((row, c) => row.forEach((v, t) => { if (t % 2 === 1) data.push([c, (t - 1) / 2, +v.toFixed(1)]); }));
+    mk('c-main', {
+      tooltip: {}, visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q.slice(1)}},
+      xAxis3D: {type: 'category', name: 'core', data: cats, axisLabel: {color: C.text3, interval: 1}, nameTextStyle: {color: C.text2}},
+      yAxis3D: {type: 'category', name: 'time', data: timeLabels.filter((_, t) => t % 2 === 1), axisLabel: {color: C.text3, interval: 9}, nameTextStyle: {color: C.text2}},
+      zAxis3D: {type: 'value', name: '%', max: 100, axisLabel: {color: C.text3}, nameTextStyle: {color: C.text2}},
+      grid3D: {boxWidth: 150, boxDepth: 110, boxHeight: 60,
+        axisLine: {lineStyle: {color: C.text3}}, splitLine: {lineStyle: {color: C.grid}}, axisPointer: {lineStyle: {color: C.text2}},
+        viewControl: {alpha: 22, beta: 38, distance: 195, autoRotate: false},
+        light: {main: {intensity: 1.15, shadow: true, alpha: 40, beta: 30}, ambient: {intensity: 0.35}}},
+      series: [{type: 'bar3D', data, shading: 'lambert', bevelSize: 0.2, itemStyle: {opacity: 1}}],
+    });
+  }
+  // core mini-cards
+  document.getElementById('cores').innerHTML = procCoreNow[focus.pid].map((v, i) => `
+    <div class="core ${v > 50 ? 'hot' : ''}" style="--c:${focus.color}"><div class="t"><span>C${i}</span><span>sys ${sysCores[i]}%</span></div>
+    <div class="v num">${v.toFixed(v < 10 ? 1 : 0)}%</div><div class="spark" id="sp${i}"></div></div>`).join('');
+  coreHist.forEach((row, i) => mk('sp' + i, {
+    animation: false, grid: {left: 0, right: 0, top: 2, bottom: 0},
+    xAxis: {type: 'category', show: false, data: timeLabels, boundaryGap: false}, yAxis: {type: 'value', show: false, max: 100},
+    series: [{type: 'line', data: row, showSymbol: false, lineStyle: {width: 1.5, color: focus.color}, areaStyle: {color: focus.color, opacity: 0.12}}],
+  }));
+} else if (TAB === 'gpu') {
+  main.innerHTML = focusBar() + `
+    <div class="toolbar"><div class="seg"><button class="${VIEW === '2d' ? 'on' : ''}">2D</button><button class="${VIEW === '3d' ? 'on' : ''}">3D</button></div>
+      <span class="faint">NVIDIA driver 560.35 · NVML</span><span class="spacer" style="flex:1"></span>${procLegend()}</div>
+    <div class="grid g-gpu">
+      <div class="card gpu-dev">
+        <div class="card-h"><h3>GPU0 · RTX 4070</h3><span class="badge ok">active</span></div>
+        <div class="chart" id="c-gauge" style="height:150px"></div>
+        <div class="rows">
+          <span class="muted">Memory</span><span class="num">6.1 / 12.0 GB</span>
+        </div>
+        <div class="meterbar"><i style="width:51%"></i></div>
+        <div class="rows">
+          <span class="muted">Temperature</span><span class="num">64 °C</span>
+          <span class="muted">Power</span><span class="num">142 / 200 W</span>
+          <span class="muted">Clock</span><span class="num">2475 MHz</span>
+          <span class="muted">Fan</span><span class="num">48%</span>
+        </div>
+      </div>
+      <div class="card"><div class="card-h"><h3>${VIEW === '3d' ? '3D · engine × time × utilisation' : 'Engine utilisation'}</h3><span class="sub">${VIEW === '3d' ? 'drag to rotate' : 'SM · memory controller · encoder · decoder'}</span></div>
+        <div class="chart ${VIEW === '3d' ? 'tall' : ''}" id="c-eng" style="${VIEW === '3d' ? '' : 'height:290px'}"></div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><h3>GPU memory by process</h3><span class="sub">stacked · GB</span></div><div class="chart" id="c-gmem"></div></div>
+      <div class="card"><div class="card-h"><h3>GPU utilisation by process</h3><span class="sub">SM % · now</span></div><div class="chart" id="c-gutil"></div></div>
+    </div>
+    <div class="note">Per-process GPU figures come from NVML. On machines without an NVIDIA/AMD driver this tab shows “GPU metrics unavailable”.</div>`;
+  mk('c-gauge', {series: [{type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100, radius: '96%', center: ['50%', '58%'],
+    progress: {show: true, width: 12, roundCap: true, itemStyle: {color: C.s[0]}}, axisLine: {lineStyle: {width: 12, color: [[1, C.grid]]}, roundCap: true},
+    axisTick: {show: false}, splitLine: {show: false}, axisLabel: {show: false}, pointer: {show: false},
+    title: {offsetCenter: [0, '38%'], color: C.text3, fontSize: 12},
+    detail: {offsetCenter: [0, '0%'], formatter: '{value}%', color: C.text, fontSize: 30, fontWeight: 700},
+    data: [{value: 72, name: 'utilisation'}]}]});
+  const eng = {SM: walk(72, 20, 30, 99), MEM: walk(41, 12, 15, 70), ENC: walk(0, 1, 0, 3), DEC: walk(3, 4, 0, 12)};
+  if (VIEW === '3d') {
+    const data = []; const lanes = Object.keys(eng);
+    lanes.forEach((k, l) => eng[k].forEach((v, t) => data.push([t, l, +v.toFixed(1)])));
+    mk('c-eng', {visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q.slice(1)}},
+      xAxis3D: {type: 'category', name: 'time', data: timeLabels, axisLabel: {color: C.text3, interval: 14}},
+      yAxis3D: {type: 'category', name: 'engine', data: lanes, axisLabel: {color: C.text3}},
+      zAxis3D: {type: 'value', name: '%', max: 100, axisLabel: {color: C.text3}},
+      grid3D: {boxWidth: 170, boxDepth: 60, boxHeight: 50, axisLine: {lineStyle: {color: C.text3}}, splitLine: {lineStyle: {color: C.grid}},
+        viewControl: {alpha: 22, beta: 30, distance: 210}, light: {main: {intensity: 1.1}, ambient: {intensity: 0.4}}},
+      series: [{type: 'surface', data, wireframe: {show: true, lineStyle: {color: C.surface, width: 0.5}}, shading: 'lambert'}]});
+  } else {
+    const lanes = Object.keys(eng);
+    mk('c-eng', {animation: false, tooltip: tip,
+      grid: lanes.map((_, i) => ({left: 44, right: 54, top: 8 + i * 70, height: 52})),
+      xAxis: lanes.map((_, i) => ({gridIndex: i, type: 'category', data: timeLabels, boundaryGap: false, ...baseAxis, splitLine: {show: false},
+        axisLabel: {...baseAxis.axisLabel, show: i === lanes.length - 1, interval: 14}})),
+      yAxis: lanes.map((k, i) => ({gridIndex: i, type: 'value', max: 100, splitNumber: 1, ...baseAxis, axisLine: {show: false}, axisLabel: {show: false},
+        name: k, nameLocation: 'middle', nameRotate: 0, nameGap: 14, nameTextStyle: {color: C.text2, fontWeight: 600, fontSize: 11, align: 'right'}})),
+      series: lanes.map((k, i) => ({type: 'line', xAxisIndex: i, yAxisIndex: i, data: eng[k], showSymbol: false, smooth: 0.3,
+        lineStyle: {width: 1.5, color: C.s[0]}, areaStyle: {color: C.s[0], opacity: 0.15},
+        endLabel: {show: true, color: C.text, fontWeight: 600, formatter: p => Math.round(p.value) + '%'}})),
+    });
+  }
+  let a = 4.2; const ga = Array.from({length: N}, () => (a = Math.min(4.8, a + rnd() * 0.03)));
+  mk('c-gmem', lineOpt([
+    {name: 'python', data: ga, color: selected[0].color, stack: 'm', areaStyle: {opacity: 0.55}, lineStyle: {width: 1}},
+    {name: 'chrome', data: walk(0.3, 0.04, 0.2, 0.4), color: selected[1].color, stack: 'm', areaStyle: {opacity: 0.55}, lineStyle: {width: 1}},
+    {name: 'other', data: walk(1.0, 0.05, 0.9, 1.1), color: C.text3, stack: 'm', areaStyle: {opacity: 0.25}, lineStyle: {width: 1}},
+  ], {unit: ' G', max: 12}));
+  mk('c-gutil', {animation: false, grid: {left: 64, right: 44, top: 10, bottom: 20},
+    xAxis: {type: 'value', max: 100, ...baseAxis, axisLabel: {...baseAxis.axisLabel, formatter: '{value}%'}},
+    yAxis: {type: 'category', data: ['other', 'chrome', 'python'], ...baseAxis, splitLine: {show: false}, axisLabel: {color: C.text2}},
+    series: [{type: 'bar', barWidth: 18, data: [{value: 10, itemStyle: {color: C.text3}}, {value: 4, itemStyle: {color: selected[1].color}}, {value: 68, itemStyle: {color: selected[0].color}}],
+      itemStyle: {borderRadius: [0, 4, 4, 0]}, label: {show: true, position: 'right', color: C.text, formatter: '{c}%'}}]});
+} else {
+  main.innerHTML = focusBar() + `<div class="grid g2">${selected.map(p => `
+    <div class="card"><div class="card-h"><h3><span style="color:${p.color}">●</span> ${p.name}</h3><span class="badge ok">running</span></div>
+      <dl class="kv"><dt>PID</dt><dd class="mono">${p.pid}</dd><dt>User</dt><dd>${p.user}</dd><dt>Uptime</dt><dd>${p.up}</dd>
+      <dt>Threads</dt><dd>${p.threads}</dd><dt>Command</dt><dd class="mono">${p.cmd}</dd></dl></div>`).join('')}
+    <div class="card exited"><div class="card-h"><h3><span style="color:${C.s[2]}">●</span> make <span class="faint mono">7702</span></h3><span class="badge gone">EXITED 12:41:07</span></div>
+      <p class="muted" style="margin:0">Series kept until removed. <button class="btn">Remove</button></p></div></div>`;
+}
+</script>
+</body>
+</html>
