@@ -31,18 +31,9 @@
   </nav>
   <div class="body" id="body">
     <aside class="sidebar">
-      <div class="side-head">
-        <div class="side-title"><h2>Processes</h2><span class="faint num">312 running</span></div>
-        <input class="search" placeholder="Search name or PID…">
-      </div>
+      <div class="side-head" id="sidehead"></div>
       <div class="ptable-wrap">
-        <table class="ptable">
-          <thead><tr>
-            <th class="l" style="width:22px"></th><th class="l">PID</th><th class="l">Name</th>
-            <th class="sorted">CPU % ▾</th><th>Mem</th><th>GPU %</th>
-          </tr></thead>
-          <tbody id="ptbody"></tbody>
-        </table>
+        <table class="ptable" id="ptable"></table>
       </div>
       <div class="side-foot"><span>Sort: CPU</span><span>⟳ every 3 s</span></div>
     </aside>
@@ -93,9 +84,36 @@ const procs = [
   {pid: 1777, name: 'slack',    user: 'abi',  cpu: 1.2,   mem: '540 M', gpu: 0},
   {pid: 6020, name: 'bash',     user: 'abi',  cpu: 0.0,   mem: '5 M',   gpu: null},
 ];
-const selected = EMPTY ? [] : procs.filter(p => p.sel).sort((a, b) => a.sel - b.sel);
+const SIDE = P.get('side') || 'apps';           // apps | procs | tree
+const FILTERS = P.get('filters') === '1';        // filter popover open
+procs[1].sel = 0;                                // chrome is selected as a whole app instead
+const chromeApp = {kind: 'app', key: 'chrome', name: 'chrome', pid: '×23', count: 23, cpu: 34.2, mem: '2.8 G', gpu: 4, threads: 312,
+  user: 'abi', up: '2h 14m', cmd: '23 processes · /opt/google/chrome/chrome'};
+const selected = EMPTY ? [] : [procs[0], chromeApp];
 selected.forEach((p, i) => p.color = C.s[i]);
 const focus = selected[0];
+const focusIdx = TAB === 'details' ? 1 : 0;
+
+// apps (grouped by cgroup scope / exe tree) — "Mine" filter active, so root/system apps are hidden
+const apps = [
+  {key: 'python', L: 'P', count: 2, cpu: 121.3, mem: '3.1 G', gpu: 68, part: true, members: [
+    {pid: 9134, name: 'python', role: 'train.py', cpu: 121.0, mem: '3.1 G', gpu: 68, sel: true},
+    {pid: 9101, name: 'python', role: 'tensorboard', cpu: 0.3, mem: '96 M', gpu: null}]},
+  {key: 'chrome', L: 'C', count: 23, cpu: 34.2, mem: '2.8 G', gpu: 4, sel: true, open: true, members: [
+    {pid: 4821, name: 'renderer', cpu: 18.1, mem: '410 M', gpu: null},
+    {pid: 4790, name: 'gpu-process', cpu: 9.4, mem: '220 M', gpu: 4},
+    {pid: 4702, name: 'chrome', role: 'main', cpu: 4.2, mem: '380 M', gpu: null},
+    {pid: 4855, name: 'renderer', cpu: 1.6, mem: '190 M', gpu: null},
+    {pid: 4870, name: 'utility · network', cpu: 0.5, mem: '62 M', gpu: null}], more: 18},
+  {key: 'code', L: 'V', count: 14, cpu: 8.7, mem: '1.6 G', gpu: 0},
+  {key: 'node', L: 'N', count: 3, cpu: 6.3, mem: '412 M', gpu: null},
+  {key: 'gnome-shell', L: 'G', count: 1, cpu: 3.4, mem: '310 M', gpu: 1},
+  {key: 'slack', L: 'S', count: 6, cpu: 1.2, mem: '540 M', gpu: 0},
+  {key: 'pipewire', L: 'P', count: 3, cpu: 0.9, mem: '38 M', gpu: null},
+  {key: 'firefox', L: 'F', count: 11, cpu: 0.7, mem: '1.1 G', gpu: 0},
+  {key: 'bash', L: 'B', count: 4, cpu: 0.0, mem: '18 M', gpu: null},
+  {key: 'spotify', L: 'S', count: 5, cpu: 0.4, mem: '420 M', gpu: 0},
+];
 
 const sysCores = Array.from({length: CORES}, (_, i) => [62, 18, 25, 96, 14, 9, 31, 22, 12, 28, 8, 88, 20, 11, 35, 15][i]);
 // python: 1 hot core (C3) + C11 busy + light spread; chrome: light spread
@@ -117,17 +135,79 @@ document.getElementById('meters').innerHTML =
   meter('CPU', '58%', 58) + meter('RAM', '11.2 / 16 GB', 70, 'optional') + meter('GPU0 · RTX 4070', '72% · 6.1/12 GB', 72);
 document.getElementById('corestrip').innerHTML = sysCores.map((v, i) => `<i title="C${i} ${v}%" style="height:${Math.max(8, v)}%"></i>`).join('');
 
-// ---------- process table ----------
-document.getElementById('ptbody').innerHTML = procs.map(p => `
-  <tr class="${p.sel && !EMPTY ? 'sel' : ''}" style="${p.color ? `--c:${p.color}` : ''}">
-    <td class="l"><span class="chk"></span></td>
-    <td class="l mono faint">${p.pid}</td>
-    <td class="l name" title="${p.name}">${p.denied ? '🔒 ' : ''}${p.name}</td>
-    ${p.denied
-      ? '<td class="denied">n/a</td><td class="denied">n/a</td><td class="denied">–</td>'
-      : `<td class="bar-cell">${p.cpu.toFixed(1)}<span class="b" style="width:${Math.min(60, p.cpu / 2)}px"></span></td>
-         <td>${p.mem}</td><td class="${p.gpu == null ? 'faint' : ''}">${p.gpu == null ? '–' : p.gpu}</td>`}
-  </tr>`).join('');
+// ---------- sidebar ----------
+const sel = !EMPTY;
+const cpuCell = v => `<td class="bar-cell">${v.toFixed(1)}<span class="b" style="width:${Math.min(60, v / 2)}px"></span></td>`;
+const gpuCell = g => `<td class="${g == null ? 'faint' : ''}">${g == null ? '–' : g}</td>`;
+document.getElementById('sidehead').innerHTML = `
+  <div class="side-title">
+    <div class="seg">${[['apps', 'Apps'], ['procs', 'Processes'], ['tree', 'Tree']].map(([k, l]) => `<button class="${k === SIDE ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <span class="faint num">${SIDE === 'apps' ? '41 apps' : '187 / 312 shown'}</span>
+  </div>
+  <div class="side-row">
+    <input class="search" placeholder="Search name, PID, app…">
+    <button class="btn fbtn ${FILTERS ? 'on' : ''}">⚙ Filters<span class="n">2</span></button>
+  </div>
+  <div class="fchips"><span class="fchip">User: Mine <span class="x">✕</span></span><span class="fchip">Hide system <span class="x">✕</span></span><button class="linkbtn">Clear all</button></div>
+  ${FILTERS ? `<div class="popover">
+    <h4>Filters</h4>
+    <div class="prow"><span>User</span><div><label><input type="radio" name="u" checked> Mine</label><label><input type="radio" name="u"> All</label><label><input type="radio" name="u"> System</label></div></div>
+    <div class="prow full"><label><input type="checkbox" checked> Hide kernel threads &amp; system services</label></div>
+    <div class="prow full"><label><input type="checkbox"> Only processes using the GPU</label></div>
+    <div class="prow"><span>Min CPU</span><div class="slider"><div class="track"><i style="width:4%"></i><b style="left:4%"></b></div><span class="num">2%</span></div></div>
+    <div class="prow"><span>Status</span><div><label><input type="checkbox" checked> running</label><label><input type="checkbox" checked> sleeping</label><label><input type="checkbox"> zombie</label></div></div>
+    <div class="prow"><span>Group by</span><div><select class="btn"><option>App (cgroup / bundle / tree)</option><option>Executable</option><option>User</option></select></div></div>
+    <div class="pfoot"><button class="btn">Reset</button><button class="btn primary">Done</button></div>
+  </div>` : ''}`;
+
+const ptable = document.getElementById('ptable');
+if (SIDE === 'apps') {
+  ptable.innerHTML = `<thead><tr><th class="l" style="width:22px"></th><th class="l">App</th><th>#</th><th class="sorted">CPU % ▾</th><th>Mem</th><th>GPU %</th></tr></thead><tbody>` +
+    apps.map(a => {
+      const c = a.key === 'chrome' ? C.s[1] : a.key === 'python' ? C.s[0] : '';
+      const cls = sel && a.sel ? 'sel' : sel && a.part ? 'part' : '';
+      let h = `<tr class="${cls}" style="${c ? `--c:${c}` : ''}"><td class="l"><span class="chk"></span></td>
+        <td class="l name" style="max-width:150px"><span class="twist">${a.open ? '▾' : '▸'}</span><span class="avatar">${a.L}</span>${a.key}</td>
+        <td><span class="count">${a.count}</span></td>${cpuCell(a.cpu)}<td>${a.mem}</td>${gpuCell(a.gpu)}</tr>`;
+      if (a.open) {
+        h += a.members.map(m => `<tr class="member ${sel && (a.sel || m.sel) ? 'sel' : ''}" style="--c:${c}"><td class="l"><span class="chk"></span></td>
+          <td class="l name" title="${m.name}"><span class="mono faint">${m.pid}</span> ${m.name}${m.role ? ` <span class="faint">(${m.role})</span>` : ''}</td><td></td>
+          <td>${m.cpu.toFixed(1)}</td><td>${m.mem}</td>${gpuCell(m.gpu)}</tr>`).join('');
+        if (a.more) h += `<tr class="more" style="--c:${c}"><td></td><td class="l" colspan="5">… ${a.more} more processes</td></tr>`;
+      }
+      return h;
+    }).join('') + '</tbody>';
+} else if (SIDE === 'procs') {
+  const rows = [
+    {...procs[0], app: 'python', c: C.s[0], sel: 1}, {pid: 4821, name: 'renderer', app: 'chrome', cpu: 18.1, mem: '410 M', gpu: null, c: C.s[1], sel: 1},
+    {pid: 4790, name: 'gpu-process', app: 'chrome', cpu: 9.4, mem: '220 M', gpu: 4, c: C.s[1], sel: 1},
+    {pid: 1022, name: 'code', app: 'code', cpu: 8.7, mem: '860 M', gpu: 0}, {pid: 5560, name: 'node', app: 'node', cpu: 6.3, mem: '412 M', gpu: null},
+    {pid: 4702, name: 'chrome', app: 'chrome', cpu: 4.2, mem: '380 M', gpu: null, c: C.s[1], sel: 1},
+    {pid: 990, name: 'gnome-shell', app: 'gnome-shell', cpu: 3.4, mem: '310 M', gpu: 1}, {pid: 1033, name: 'code', app: 'code', cpu: 2.2, mem: '240 M', gpu: null},
+    {pid: 4855, name: 'renderer', app: 'chrome', cpu: 1.6, mem: '190 M', gpu: null, c: C.s[1], sel: 1},
+    {pid: 1777, name: 'slack', app: 'slack', cpu: 1.2, mem: '540 M', gpu: 0}, {pid: 1408, name: 'pipewire', app: 'pipewire', cpu: 0.9, mem: '24 M', gpu: null},
+    {pid: 7021, name: 'firefox', app: 'firefox', cpu: 0.7, mem: '480 M', gpu: 0}, {pid: 4870, name: 'utility', app: 'chrome', cpu: 0.5, mem: '62 M', gpu: null, c: C.s[1], sel: 1},
+    {pid: 8810, name: 'spotify', app: 'spotify', cpu: 0.4, mem: '310 M', gpu: 0}, {pid: 9101, name: 'python', app: 'python', cpu: 0.3, mem: '96 M', gpu: null},
+    {pid: 6020, name: 'bash', app: 'bash', cpu: 0.0, mem: '5 M', gpu: null},
+  ];
+  ptable.innerHTML = `<thead><tr><th class="l" style="width:22px"></th><th class="l">PID</th><th class="l">Name</th><th class="l">App</th><th class="sorted">CPU % ▾</th><th>Mem</th><th>GPU</th></tr></thead><tbody>` +
+    rows.map(p => `<tr class="${sel && p.sel ? 'sel' : ''}" style="${p.c ? `--c:${p.c}` : ''}"><td class="l"><span class="chk"></span></td>
+      <td class="l mono faint">${p.pid}</td><td class="l name">${p.name}</td><td class="l"><span class="appbadge">${p.app}</span></td>
+      ${cpuCell(p.cpu)}<td>${p.mem}</td>${gpuCell(p.gpu)}</tr>`).join('') + '</tbody>';
+} else {
+  const tree = [
+    ['', 1, 'systemd', 0.0, '12 M'], ['├─ ', 845, 'NetworkManager', 0.1, '18 M'], ['├─ ', 980, 'systemd --user', 0.0, '9 M'],
+    ['│  ├─ ', 990, 'gnome-shell', 3.4, '310 M'], ['│  │  ├─ ', 4702, 'chrome', 4.2, '380 M', 1], ['│  │  │  ├─ ', 4790, 'chrome · gpu-process', 9.4, '220 M', 1],
+    ['│  │  │  ├─ ', 4821, 'chrome · renderer', 18.1, '410 M', 1], ['│  │  │  ├─ ', 4855, 'chrome · renderer', 1.6, '190 M', 1],
+    ['│  │  │  └─ ', 4870, 'chrome · utility', 0.5, '62 M', 1], ['│  │  ├─ ', 1022, 'code', 8.7, '860 M'], ['│  │  │  └─ ', 1033, 'code · extensionHost', 2.2, '240 M'],
+    ['│  │  └─ ', 1777, 'slack', 1.2, '540 M'], ['│  ├─ ', 1408, 'pipewire', 0.9, '24 M'], ['│  └─ ', 6020, 'bash', 0.0, '5 M'],
+    ['│     ├─ ', 9134, 'python train.py', 121.0, '3.1 G', 0], ['│     └─ ', 9101, 'python tensorboard', 0.3, '96 M'], ['└─ ', 612, 'dockerd', 0.4, '88 M'],
+  ];
+  ptable.innerHTML = `<thead><tr><th class="l" style="width:22px"></th><th class="l">Process tree</th><th class="sorted">CPU %</th><th>Mem</th></tr></thead><tbody>` +
+    tree.map(([pfx, pid, name, cpu, mem, s]) => `<tr class="${sel && s != null ? 'sel' : ''}" style="${s != null ? `--c:${C.s[s === 1 ? 1 : 0]}` : ''}">
+      <td class="l"><span class="chk"></span></td><td class="l name" style="max-width:250px"><span class="tree-pfx">${pfx}</span><span class="mono faint">${pid}</span> ${name}</td>
+      <td>${cpu.toFixed(1)}</td><td>${mem}</td></tr>`).join('') + '</tbody>';
+}
 
 // ---------- main ----------
 const main = document.getElementById('main');
@@ -151,7 +231,7 @@ const lineOpt = (series, {unit = '', max} = {}) => ({
 function focusBar() {
   return `<div class="focusbar">
     <span class="faint">Focus</span>
-    ${selected.map((p, i) => `<span class="chip ${i === 0 ? 'active' : ''}" style="--c:${p.color}"><span class="dot"></span>${p.name} <span class="faint mono">${p.pid}</span><span class="x">×</span></span>`).join('')}
+    ${selected.map((p, i) => `<span class="chip ${i === focusIdx ? 'active' : ''}" style="--c:${p.color}"><span class="dot ${p.kind === 'app' ? 'sq' : ''}"></span>${p.kind === 'app' ? '▣ ' : ''}${p.name} <span class="faint mono">${p.pid}</span><span class="x">×</span></span>`).join('')}
     <span class="spacer" style="flex:1"></span>
     <button class="btn">Compare</button><button class="btn">Clear</button>
   </div>
@@ -194,7 +274,7 @@ if (EMPTY) {
                        {name: 'chrome', data: walk(4, 4, 0, 12), color: selected[1].color}], {unit: '%', max: 100}));
   let m = 2.6; const memA = Array.from({length: N}, () => (m = Math.min(3.1, m + rnd() * 0.02)));
   mk('c-mem', lineOpt([{name: 'python', data: memA, color: selected[0].color, areaStyle: {opacity: 0.08}},
-                       {name: 'chrome', data: walk(1.2, 0.05, 1.1, 1.3), color: selected[1].color}], {unit: ' G'}));
+                       {name: 'chrome', data: walk(2.75, 0.06, 2.6, 2.9), color: selected[1].color}], {unit: ' G'}));
   mk('c-io', lineOpt([{name: 'python read', data: walk(820, 600, 0, 2400), color: selected[0].color},
                       {name: 'python write', data: walk(260, 300, 0, 900), color: selected[0].color, lineStyle: {width: 2, type: 'dashed'}},
                       {name: 'chrome read', data: walk(60, 80, 0, 300), color: selected[1].color},
@@ -333,12 +413,43 @@ if (EMPTY) {
     series: [{type: 'bar', barWidth: 18, data: [{value: 10, itemStyle: {color: C.text3}}, {value: 4, itemStyle: {color: selected[1].color}}, {value: 68, itemStyle: {color: selected[0].color}}],
       itemStyle: {borderRadius: [0, 4, 4, 0]}, label: {show: true, position: 'right', color: C.text, formatter: '{c}%'}}]});
 } else {
-  main.innerHTML = focusBar() + `<div class="grid g2">${selected.map(p => `
-    <div class="card"><div class="card-h"><h3><span style="color:${p.color}">●</span> ${p.name}</h3><span class="badge ok">running</span></div>
-      <dl class="kv"><dt>PID</dt><dd class="mono">${p.pid}</dd><dt>User</dt><dd>${p.user}</dd><dt>Uptime</dt><dd>${p.up}</dd>
-      <dt>Threads</dt><dd>${p.threads}</dd><dt>Command</dt><dd class="mono">${p.cmd}</dd></dl></div>`).join('')}
-    <div class="card exited"><div class="card-h"><h3><span style="color:${C.s[2]}">●</span> make <span class="faint mono">7702</span></h3><span class="badge gone">EXITED 12:41:07</span></div>
-      <p class="muted" style="margin:0">Series kept until removed. <button class="btn">Remove</button></p></div></div>`;
+  // Details tab — focused on the chrome *app*: member breakdown
+  const col = chromeApp.color;
+  const mem = [['renderer 4821', 410], ['chrome (main) 4702', 380], ['gpu-process 4790', 220], ['renderer 4855', 190], ['renderer 4861', 170],
+    ['renderer 4877', 150], ['extension 4740', 120], ['utility · network 4870', 62], ['utility · audio 4881', 40], ['14 others', 1060]];
+  main.innerHTML = focusBar() + `
+    <div class="card"><div class="card-h"><h3><span class="avatar" style="background:${col};color:#fff">C</span>chrome <span class="faint">· app · 23 processes</span></h3><span class="badge ok">running</span></div>
+      <div class="stats" style="grid-template-columns:repeat(6,1fr)">
+        <div class="stat"><div class="k">CPU</div><div class="v num">34.2%</div><div class="d">2.1% of all cores</div></div>
+        <div class="stat"><div class="k">Memory</div><div class="v num">2.8 GB</div><div class="d">17% of RAM</div></div>
+        <div class="stat"><div class="k">GPU</div><div class="v num">4%</div><div class="d">310 MB VRAM</div></div>
+        <div class="stat"><div class="k">Processes</div><div class="v num">23</div><div class="d">+2 in last min</div></div>
+        <div class="stat"><div class="k">Threads</div><div class="v num">312</div><div class="d">across members</div></div>
+        <div class="stat"><div class="k">Disk I/O</div><div class="v num">88 KB/s</div><div class="d">read 60 · write 28</div></div>
+      </div>
+      <div class="faint" style="margin-top:8px">Grouped by cgroup <span class="mono">app-gnome-google-chrome-4702.scope</span> · user abi · started 2h 14m ago</div></div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><h3>CPU by member process</h3><span class="sub">% of one core · now</span></div><div class="chart" id="c-mcpu" style="height:300px"></div></div>
+      <div class="card"><div class="card-h"><h3>Memory by member process</h3><span class="sub">RSS · treemap</span></div><div class="chart" id="c-mtree" style="height:300px"></div></div>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="card-h"><h3><span style="color:${selected[0].color}">●</span> python <span class="faint mono">9134</span></h3><span class="badge ok">running</span></div>
+        <dl class="kv"><dt>App</dt><dd>python (2 processes)</dd><dt>User</dt><dd>abi</dd><dt>Uptime</dt><dd>5m 02s</dd><dt>Threads</dt><dd>9</dd><dt>Command</dt><dd class="mono">python train.py --epochs 40 --batch 64</dd></dl></div>
+      <div class="card exited"><div class="card-h"><h3><span style="color:${C.s[2]}">●</span> make <span class="faint mono">7702</span></h3><span class="badge gone">EXITED 12:41:07</span></div>
+        <p class="muted" style="margin:0">Series kept until removed. <button class="btn">Remove</button></p></div>
+    </div>`;
+  const cpuM = [['renderer 4821', 18.1], ['gpu-process 4790', 9.4], ['chrome (main) 4702', 4.2], ['renderer 4855', 1.6], ['utility · network 4870', 0.5], ['18 others', 0.4]].reverse();
+  mk('c-mcpu', {animation: false, grid: {left: 150, right: 50, top: 6, bottom: 22},
+    xAxis: {type: 'value', ...baseAxis, axisLabel: {...baseAxis.axisLabel, formatter: '{value}%'}},
+    yAxis: {type: 'category', data: cpuM.map(d => d[0]), ...baseAxis, splitLine: {show: false}, axisLabel: {color: C.text2}},
+    series: [{type: 'bar', barWidth: 16, data: cpuM.map(d => ({value: d[1], itemStyle: {color: d[0].includes('others') ? C.text3 : col}})),
+      itemStyle: {borderRadius: [0, 4, 4, 0]}, label: {show: true, position: 'right', color: C.text, formatter: '{c}%'}}]});
+  mk('c-mtree', {animation: false, tooltip: {formatter: p => `${p.name}: ${p.value} MB`},
+    series: [{type: 'treemap', roam: false, nodeClick: false, breadcrumb: {show: false}, width: '100%', height: '100%', top: 0, left: 0,
+      itemStyle: {borderColor: C.surface, borderWidth: 2, gapWidth: 2},
+      label: {show: true, formatter: p => `{n|${p.name}}\n{v|${p.value >= 1000 ? (p.value / 1000).toFixed(1) + ' GB' : p.value + ' MB'}}`,
+        rich: {n: {color: '#fff', fontSize: 12, fontWeight: 600}, v: {color: 'rgba(255,255,255,.85)', fontSize: 11, padding: [3, 0, 0, 0]}}},
+      data: mem.map((d, i) => ({name: d[0], value: d[1], itemStyle: {color: d[0].includes('others') ? C.text3 : col, opacity: d[0].includes('others') ? 1 : 1 - i * 0.07}}))}]});
 }
 </script>
 </body>
