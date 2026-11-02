@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>res-watch</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%233b5bdb'/%3E%3Cpath d='M7 19l5-6 5 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<script>
+  // apply the saved theme before first paint
+  try { const t = JSON.parse(localStorage.getItem('rw.theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="stylesheet" href="style.css">
+<script src="vendor/echarts.min.js"></script>
+<script src="vendor/echarts-gl.min.js"></script>
+<script src="charts.js"></script>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span>res-watch <span class="faint host" id="host"></span></div>
+    <div class="meters" id="meters"></div>
+    <div class="corestrip" id="corestrip" title="System usage per logical core"></div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <span class="conn" id="conn" title="Live connection"></span>
+      <select class="btn optional" id="every" title="Update interval"></select>
+      <button class="btn optional" id="pause">⏸ Pause</button>
+      <button class="btn" id="theme" title="Toggle theme">Theme: auto</button>
+      <button class="btn hidden" id="logout" title="Log out">Log out</button>
+    </div>
+  </header>
+  <nav class="mobile-tabs" id="mtabs">
+    <button data-v="list">Processes</button><button data-v="charts">Charts</button>
+  </nav>
+  <div class="body" id="body" data-mview="list">
+    <aside class="sidebar">
+      <div class="side-head" id="sidehead">
+        <div class="side-title">
+          <div class="seg" id="sidemode">
+            <button data-mode="apps">Apps</button><button data-mode="procs">Processes</button><button data-mode="tree">Tree</button>
+          </div>
+          <span class="faint num" id="sidecount"></span>
+        </div>
+        <div class="side-row">
+          <input class="search" id="search" placeholder="Search name, PID, app…" autocomplete="off" spellcheck="false">
+          <button class="btn fbtn" id="fbtn">⚙ Filters<span class="n hidden" id="fcount"></span></button>
+        </div>
+        <div class="fchips" id="fchips"></div>
+        <div class="popover hidden" id="popover"></div>
+      </div>
+      <div class="ptable-wrap" id="ptwrap">
+        <table class="ptable" id="ptable"></table>
+      </div>
+      <div class="side-foot"><span id="sortinfo"></span><span>⟳ every 3 s</span></div>
+    </aside>
+    <main class="main" id="main"></main>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

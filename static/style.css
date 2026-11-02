@@ -208,7 +208,8 @@ table.ptable { width: 100%; border-collapse: collapse; }
 @media (max-width: 768px) {
   .app { height: auto; min-height: 100vh; }
   .topbar { padding: 10px 16px; gap: 10px 14px; }
-  .topbar .corestrip, .topbar .controls, .meter.optional { display: none; }
+  .topbar .corestrip, .topbar .controls .optional, .topbar #theme, .topbar .conn, .meter.optional { display: none; }
+  .topbar .controls { margin-left: auto; }
   .body { grid-template-columns: 1fr; }
   .sidebar { border-right: 0; }
   .mobile-tabs { display: flex; padding: 8px 16px 0; gap: 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -265,3 +266,25 @@ table.ptable { width: 100%; border-collapse: collapse; }
 .tree-pfx { color: var(--text-3); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
 .chip .dot.sq { border-radius: 2px; }
 .appbadge { display: inline-block; font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-2); margin-left: 2px; }
+
+/* ---------- live app extras ---------- */
+.brand .host { font-weight: 400; font-size: 13px; }
+.conn { width: 8px; height: 8px; border-radius: 50%; background: var(--crit); display: inline-block; margin-right: 4px; }
+.conn.ok { background: var(--ok); }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+  background: var(--text); color: var(--surface); padding: 8px 14px; border-radius: 8px; transition: all .2s; z-index: 50; }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.chip .badge { margin-left: 2px; }
+.popover input[type=range] { accent-color: var(--accent); }
+.gpu-dev + .card .chart { min-height: 200px; }
+
+/* ---------- login ---------- */
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px 26px; box-shadow: var(--shadow); }
+.login-card .brand { margin-bottom: 18px; font-size: 18px; }
+.login-card label { display: block; font-size: 12px; color: var(--text-2); margin: 12px 0 5px; }
+.login-card input { width: 100%; padding: 9px 11px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); }
+.login-card input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.login-card .btn.primary { width: 100%; margin-top: 18px; padding: 9px; font-weight: 600; }
+.login-err { color: var(--crit); font-size: 12px; min-height: 18px; margin-top: 10px; }

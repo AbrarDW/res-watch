@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · res-watch</title>
+<script>try { const t = JSON.parse(localStorage.getItem('rw.theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="f" autocomplete="on">
+    <div class="brand"><span class="brand-dot"></span>res-watch</div>
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" required autofocus>
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit" id="go">Sign in</button>
+    <div class="login-err" id="err" role="alert"></div>
+  </form>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const err = document.getElementById('err'), go = document.getElementById('go');
+  err.textContent = ''; go.disabled = true;
+  try {
+    const r = await fetch('api/login', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: document.getElementById('u').value, password: document.getElementById('p').value})});
+    if (r.ok) { location.href = './'; return; }
+    const d = await r.json().catch(() => ({}));
+    err.textContent = d.detail || 'Sign-in failed.';
+  } catch (x) { err.textContent = 'Cannot reach the server.'; }
+  go.disabled = false;
+});
+</script>
+</body>
+</html>

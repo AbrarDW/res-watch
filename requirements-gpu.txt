@@ -1,0 +1,2 @@
+# Optional: NVIDIA GPU metrics (per-GPU and per-process)
+nvidia-ml-py>=12.535

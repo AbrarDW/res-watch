@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reswatch"
+version = "0.1.0"
+description = "Per-process and per-app resource monitor (CPU per core, GPU, memory, disk) with a web UI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "psutil>=5.9"]
+
+[project.optional-dependencies]
+gpu = ["nvidia-ml-py>=12.535"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+reswatch = "reswatch.__main__:main"
+
+[tool.setuptools]
+packages = ["reswatch"]
+
+[tool.setuptools.package-data]
+reswatch = ["templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
