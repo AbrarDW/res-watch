@@ -20,10 +20,10 @@ const S = {
   side: LS.get('side', 'apps'), search: '', sort: LS.get('sort', {col: 'cpu', dir: -1}),
   filters: mergeFilters(LS.get('filters', null)),
   expanded: new Set(LS.get('expanded', [])), showAll: new Set(), popover: false,
-  sel: [], focus: 0,
+  sel: [],
   tab: LS.get('tab', 'overview'), cpuView: LS.get('cpuView', 'bars'), gpuView: LS.get('gpuView', '2d'),
   children: LS.get('children', true), normalize: LS.get('normalize', false), every: LS.get('every', 1),
-  paused: false, compare: false, autoRotate: false, theme: LS.get('theme', 'auto'),
+  paused: false, autoRotate: false, theme: LS.get('theme', 'auto'),
   sys: null, times: [], gpuHist: [], details: {}, ws: null, connected: false,
 };
 function mergeFilters(f) {
@@ -248,13 +248,11 @@ function addSel(kind, id) {
     h: {cpu: [], rss: [], ior: [], iow: [], gpu: [], gmem: [], cores: []}};
   for (let i = 0; i < S.times.length; i++) for (const k in e.h) e.h[k].push(null);
   S.sel.push(e);
-  S.focus = S.sel.length - 1;
 }
 function removeSel(kind, id) {
   const i = S.sel.findIndex(e => e.kind === kind && String(e.id) === String(id));
   if (i < 0) return;
   S.sel.splice(i, 1);
-  if (S.focus >= S.sel.length) S.focus = Math.max(0, S.sel.length - 1);
 }
 function toggleSel(kind, id) {
   if (selFind(kind, id)) removeSel(kind, id); else addSel(kind, id);
@@ -355,16 +353,14 @@ function chart(id) {
 function setChart(id, opt, replace = false) { const c = chart(id); if (c) c.setOption(opt, replace); }
 addEventListener('resize', () => { for (const k in charts) charts[k].resize(); });
 
-function focusEnt() { return S.sel[S.focus] || null; }
 function label(e) { return e.kind === 'app' ? `${e.name} ×${e.last ? e.last.count : '…'}` : `${e.name} ${e.id}`; }
 function dot(e) { return `<span class="dot ${e.kind === 'app' ? 'sq' : ''}"></span>`; }
 
-function focusBar() {
+function selectionBar() {
   return `<div class="focusbar">
-    <span class="faint">Focus</span>
-    ${S.sel.map((e, i) => `<span class="chip ${i === S.focus ? 'active' : ''}" style="--c:${slotColor(e.slot)}" data-focus="${i}">${dot(e)}${e.kind === 'app' ? '▣ ' : ''}${esc(e.name)} <span class="faint mono">${e.kind === 'app' ? '×' + (e.last ? e.last.count : '…') : e.id}</span>${e.gone ? ' <span class="badge gone">exited</span>' : ''}<span class="x" data-remove="${i}" title="Remove">×</span></span>`).join('')}
+    <span class="faint">Selected</span>
+    ${S.sel.map((e, i) => `<span class="chip" style="--c:${slotColor(e.slot)}">${dot(e)}${e.kind === 'app' ? '▣ ' : ''}${esc(e.name)} <span class="faint mono">${e.kind === 'app' ? '×' + (e.last ? e.last.count : '…') : e.id}</span>${e.gone ? ' <span class="badge gone">exited</span>' : ''}<span class="x" data-remove="${i}" title="Remove">×</span></span>`).join('')}
     <span style="flex:1"></span>
-    ${S.tab === 'cpu' && S.sel.length > 1 ? `<button class="btn ${S.compare ? 'primary' : ''}" data-act="compare">Compare</button>` : ''}
     <button class="btn" data-act="clear">Clear</button>
   </div>
   <div class="tabs">${[['overview', 'Overview'], ['cpu', 'CPU per core'], ['gpu', 'GPU'], ['details', 'Details']]
@@ -385,7 +381,7 @@ function renderMain() {
     return;
   }
   const gpuOk = S.meta && S.meta.gpu && S.meta.gpu.available;
-  let h = focusBar();
+  let h = selectionBar();
   if (S.tab === 'overview') {
     h += `<div class="toolbar"><label><input type="checkbox" data-opt="children" ${S.children ? 'checked' : ''}> Include child processes</label>
       <label><input type="checkbox" data-opt="normalize" ${S.normalize ? 'checked' : ''}> Normalise CPU by cores</label>
@@ -399,18 +395,23 @@ function renderMain() {
       </div>
       <div class="grid g2" id="statcards"></div>`;
   } else if (S.tab === 'cpu') {
-    const f = focusEnt();
     const supported = S.meta ? S.meta.percore_supported : true;
+    const overlap = S.sel.some(e => e.kind === 'pid' && S.sel.some(a => a.kind === 'app' && S.byPid.get(e.id) && S.byPid.get(e.id).app === a.id));
     h += `<div class="toolbar">
       <div class="seg">${[['bars', 'Bars'], ['heatmap', 'Heatmap'], ['3d', '3D']].map(([k, l]) => `<button class="${k === S.cpuView ? 'on' : ''}" data-cpuview="${k}">${l}</button>`).join('')}</div>
       <span class="faint" id="cpuinfo"></span><span style="flex:1"></span>
-      ${S.cpuView === 'bars' ? (S.compare ? selLegend() : legend([[label(f), slotColor(f.slot)], ['whole system', '', 'ghost']])) : '<span class="ramp">0% <b></b> 100%</span>'}
+      ${S.cpuView === 'heatmap' ? '<span class="ramp">0% <b></b> 100%</span>' : legend([...S.sel.map(e => [label(e), slotColor(e.slot)]), ...(S.cpuView === 'bars' ? [['whole system', '', 'ghost']] : [])])}
       ${S.cpuView === '3d' ? `<button class="btn ${S.autoRotate ? 'primary' : ''}" data-act="rotate">⟲ Auto-rotate</button><button class="btn" data-act="resetview">Reset view</button>` : ''}
     </div>
     ${supported ? '' : '<div class="note">Per-process usage per core is available on Linux only. Showing whole-system usage per core.</div>'}
-    <div class="card"><div class="card-h"><h3>${S.cpuView === 'bars' ? 'Usage per logical core — now' : S.cpuView === 'heatmap' ? `Usage per core over the last ${HIST} samples` : '3D · core × time × usage'}</h3>
-      <span class="sub">${S.cpuView === '3d' ? 'drag to rotate · scroll to zoom' : 'thread CPU time credited to the core it last ran on'}</span></div>
-      <div class="chart ${S.cpuView === '3d' ? 'xl' : 'tall'}" id="c-core"></div></div>
+    ${overlap ? '<div class="note">A selected process is also part of a selected app, so its CPU time is counted in both.</div>' : ''}
+    ${S.cpuView === 'heatmap'
+      ? S.sel.map(e => `<div class="card"><div class="card-h"><h3><span style="color:${slotColor(e.slot)}">${e.kind === 'app' ? '■' : '●'}</span> ${esc(label(e))}</h3>
+          <span class="sub">usage per core over the last ${HIST} samples</span></div>
+          <div class="chart" id="c-heat${e.slot}" style="height:${Math.max(150, Math.min(420, cores() * 16 + 50))}px"></div></div>`).join('')
+      : `<div class="card"><div class="card-h"><h3>${S.cpuView === 'bars' ? 'Usage per logical core — now' : '3D · core × time × usage'}</h3>
+          <span class="sub">${S.cpuView === '3d' ? 'stacked by selection · drag to rotate · scroll to zoom' : 'stacked by selection · thread CPU time credited to the core it last ran on'}</span></div>
+          <div class="chart ${S.cpuView === '3d' ? 'xl' : 'tall'}" id="c-core"></div></div>`}
     <div class="card"><div class="card-h"><h3>Cores</h3><span class="sub" id="coresub"></span></div><div class="cores" id="cores"></div></div>`;
   } else if (S.tab === 'gpu') {
     if (!gpuOk) {
@@ -484,29 +485,35 @@ function coreRows(e, n) {
 }
 
 function updateCpuTab() {
-  const f = focusEnt();
-  if (!f || !S.sys) return;
+  if (!S.sel.length || !S.sys) return;
   const sysCores = S.sys.per_core, n = sysCores.length;
-  const now = f.last && f.last.per_core ? f.last.per_core : null;
+  const zero = sysCores.map(() => 0);
+  const now = e => (e.last && e.last.per_core) || zero;
   const info = $('#cpuinfo');
-  if (info) info.textContent = `${label(f)} · ${f.last && f.last.threads != null ? f.last.threads + (f.last.threads === 1 ? ' thread on ' : ' threads on ') : ''}${n} logical cores`;
+  const threads = S.sel.reduce((s, e) => s + ((e.last && e.last.threads) || 0), 0);
+  if (info) info.textContent = `${S.sel.length} selected · ${threads} thread${threads === 1 ? '' : 's'} on ${n} logical cores`;
   if (S.cpuView === 'bars') {
-    const ents = S.compare ? S.sel.map(e => ({name: label(e), color: slotColor(e.slot), values: (e.last && e.last.per_core) || sysCores.map(() => 0)}))
-      : [{name: label(f), color: slotColor(f.slot), values: now || sysCores.map(() => 0)}];
-    setChart('c-core', R.coreBars(C, sysCores, ents), true);
+    setChart('c-core', R.coreBars(C, sysCores, S.sel.map(e => ({name: label(e), color: slotColor(e.slot), values: now(e)}))), true);
   } else if (S.cpuView === 'heatmap') {
-    setChart('c-core', R.heat(C, S.times, coreRows(f, n)), true);
+    S.sel.forEach(e => setChart('c-heat' + e.slot, R.heat(C, S.times, coreRows(e, n)), true));
   } else {
-    setChart('c-core', R.bars3d(C, S.times, coreRows(f, n), {autoRotate: S.autoRotate}), false);
+    setChart('c-core', R.bars3d(C, S.times, S.sel.map(e => ({name: label(e), color: slotColor(e.slot), rows: coreRows(e, n)})),
+      {autoRotate: S.autoRotate}), false);
   }
-  const rows = coreRows(f, n), col = slotColor(f.slot);
+  const rows = S.sel.map(e => coreRows(e, n));
   const sub = $('#coresub');
-  if (sub) sub.textContent = `${label(f)} share of each core · sparkline = last ${HIST} samples`;
+  if (sub) sub.textContent = `share of each core taken by the selection · one line per item, last ${HIST} samples`;
   const el = $('#cores');
   if (el) el.innerHTML = sysCores.map((sv, i) => {
-    const v = now ? now[i] : null;
-    return `<div class="core ${v > 50 ? 'hot' : ''}" style="--c:${col}"><div class="t"><span>C${i}</span><span>sys ${Math.round(sv)}%</span></div>
-      <div class="v num">${v == null ? '–' : v.toFixed(v < 10 ? 1 : 0) + '%'}</div><div class="spark">${R.spark(rows[i], col)}</div></div>`;
+    const parts = S.sel.map(e => ({v: now(e)[i] || 0, c: slotColor(e.slot)}));
+    const tot = parts.reduce((s, p) => s + p.v, 0);
+    const lead = parts.reduce((a, p) => p.v > a.v ? p : a, {v: -1, c: C.s[0]});
+    const seg = parts.filter(p => p.v > 0).map(p => `<i style="width:${Math.min(100, p.v)}%;background:${p.c}"></i>`).join('');
+    return `<div class="core ${tot > 50 ? 'hot' : ''}" style="--c:${lead.c}" title="${esc(S.sel.map((e, k) => `${label(e)}: ${parts[k].v.toFixed(1)}%`).join('\n'))}">
+      <div class="t"><span>C${i}</span><span>sys ${Math.round(sv)}%</span></div>
+      <div class="v num">${tot.toFixed(tot < 10 ? 1 : 0)}%</div>
+      <div class="segbar">${seg}</div>
+      <div class="spark">${R.sparkMulti(rows.map((r, k) => ({values: r[i], color: slotColor(S.sel[k].slot)})))}</div></div>`;
   }).join('');
 }
 
@@ -532,55 +539,71 @@ function updateGpuTab() {
 
 /* ------------------------------------------------------------ details */
 function loadDetails() {
-  const f = focusEnt();
-  if (f && f.kind === 'pid' && !S.details[f.id]) {
-    api(`api/process/${f.id}`).then(d => { S.details[f.id] = d; renderDetails(); }).catch(() => { S.details[f.id] = {missing: true}; });
+  for (const e of S.sel) {
+    if (e.kind === 'pid' && !S.details[e.id]) {
+      S.details[e.id] = {};
+      api(`api/process/${e.id}`).then(d => { S.details[e.id] = d; renderDetails(); }).catch(() => { S.details[e.id] = {missing: true}; });
+    }
   }
   renderDetails();
 }
+
+function appHead(e) {
+  const d = e.last || {}, col = slotColor(e.slot);
+  return `<div class="card ${e.gone ? 'exited' : ''}"><div class="card-h"><h3><span class="avatar" style="background:${col};color:#fff">${esc((e.name[0] || '?').toUpperCase())}</span>${esc(e.name)} <span class="faint">· app · ${d.count ?? 0} processes</span></h3>${e.gone ? '<span class="badge gone">EXITED</span>' : '<span class="badge ok">running</span>'}</div>
+    <div class="stats stats6">
+      <div class="stat"><div class="k">CPU</div><div class="v num">${fmtPct(cpuVal(d.cpu))}</div><div class="d">${fmtPct(d.cpu == null ? null : d.cpu / cores())} of all cores</div></div>
+      <div class="stat"><div class="k">Memory</div><div class="v num">${fmtBytes(d.rss)}</div><div class="d">${fmtPct(d.mem)} of RAM (sum of RSS)</div></div>
+      <div class="stat"><div class="k">GPU</div><div class="v num">${fmtPct(d.gpu, 0)}</div><div class="d">${d.gmem ? fmtBytes(d.gmem) + ' VRAM' : '–'}</div></div>
+      <div class="stat"><div class="k">Processes</div><div class="v num">${d.count ?? 0}</div><div class="d">${esc((d.users || []).join(', '))}</div></div>
+      <div class="stat"><div class="k">Threads</div><div class="v num">${d.threads ?? '–'}</div><div class="d">across members</div></div>
+      <div class="stat"><div class="k">Disk I/O</div><div class="v num">${fmtRate((d.ior || 0) + (d.iow || 0))}</div><div class="d">read ${fmtRate(d.ior)} · write ${fmtRate(d.iow)}</div></div>
+    </div><div class="faint" style="margin-top:8px">Oldest member started ${fmtAge(d.started)} ago${e.gone ? ` · <button class="btn" data-removeid="${esc(entKey(e.kind, e.id))}">Remove</button>` : ''}</div></div>`;
+}
+
+function pidCard(e) {
+  const d = e.last || {}, col = slotColor(e.slot), x = S.details[e.id] || {};
+  const kv = [['PID', e.id], ['App', d.app || x.app || '–'], ['User', d.user || x.username || '–'], ['Status', d.status || x.status || '–'],
+    ['Uptime', fmtAge(d.started || x.started)], ['Parent PID', d.ppid ?? x.ppid ?? '–'], ['Threads', d.threads ?? x.num_threads ?? '–'],
+    ['CPU', fmtPct(cpuVal(d.cpu))], ['Memory', fmtBytes(d.rss)], ['Open files', x.num_fds ?? '–'], ['Nice', x.nice ?? '–'],
+    ['Executable', x.exe || d.exe || '–'], ['Working dir', x.cwd || '–'], ['Command', x.cmdline ? x.cmdline.join(' ') : d.cmd || '–']];
+  return `<div class="card ${e.gone ? 'exited' : ''}"><div class="card-h"><h3><span style="color:${col}">●</span> ${esc(e.name)} <span class="faint mono">${e.id}</span></h3>
+    ${e.gone ? `<span class="badge gone">EXITED ${e.goneAt ? e.goneAt.toLocaleTimeString() : ''}</span>` : `<span class="badge ok">${esc(d.status || 'running')}</span>`}</div>
+    <dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd class="${['Executable', 'Working dir', 'Command'].includes(k) ? 'mono' : ''}">${esc(v)}</dd>`).join('')}</dl>
+    ${d.denied ? '<p class="faint" style="margin:8px 0 0">🔒 Some fields are hidden: this process belongs to another user. Run res-watch with more privileges to see them.</p>' : ''}
+    ${e.gone ? `<button class="btn" style="margin-top:10px" data-removeid="${esc(entKey(e.kind, e.id))}">Remove</button>` : ''}</div>`;
+}
+
 function renderDetails() {
-  const box = $('#details'), f = focusEnt();
-  if (!box || !f) return;
-  const d = f.last || {}, col = slotColor(f.slot);
-  if (f.kind === 'app') {
-    if (box.dataset.for !== entKey(f.kind, f.id)) {
-      box.dataset.for = entKey(f.kind, f.id);
-      box.innerHTML = `<div id="dhead"></div>
-      <div class="grid g2">
-        <div class="card"><div class="card-h"><h3>CPU by member process</h3><span class="sub">${cpuUnit()} · now</span></div><div class="chart" id="c-mcpu" style="height:300px"></div></div>
-        <div class="card"><div class="card-h"><h3>Memory by member process</h3><span class="sub">RSS · treemap</span></div><div class="chart" id="c-mtree" style="height:300px"></div></div>
-      </div>`;
+  const box = $('#details');
+  if (!box) return;
+  const sig = S.sel.map(e => entKey(e.kind, e.id)).join('|');
+  if (box.dataset.for !== sig) {        // build the layout once per selection; ticks only refresh contents
+    box.dataset.for = sig;
+    const apps = S.sel.filter(e => e.kind === 'app'), pids = S.sel.filter(e => e.kind === 'pid');
+    box.innerHTML = apps.map(e => `<section class="dsec"><div id="dhead${e.slot}"></div>
+        <div class="grid g2">
+          <div class="card"><div class="card-h"><h3>CPU by member process</h3><span class="sub">${cpuUnit()} · now</span></div><div class="chart" id="c-mcpu${e.slot}" style="height:280px"></div></div>
+          <div class="card"><div class="card-h"><h3>Memory by member process</h3><span class="sub">RSS · treemap</span></div><div class="chart" id="c-mtree${e.slot}" style="height:280px"></div></div>
+        </div></section>`).join('')
+      + (pids.length ? `<div class="grid g2">${pids.map(e => `<div id="dpid${e.slot}"></div>`).join('')}</div>` : '');
+  }
+  for (const e of S.sel) {
+    if (e.kind === 'pid') {
+      const el = $('#dpid' + e.slot);
+      if (el) el.innerHTML = pidCard(e);
+      continue;
     }
-    $('#dhead').innerHTML = `<div class="card ${f.gone ? 'exited' : ''}"><div class="card-h"><h3><span class="avatar" style="background:${col};color:#fff">${esc((f.name[0] || '?').toUpperCase())}</span>${esc(f.name)} <span class="faint">· app · ${d.count ?? 0} processes</span></h3>${f.gone ? '<span class="badge gone">EXITED</span>' : '<span class="badge ok">running</span>'}</div>
-      <div class="stats" style="grid-template-columns:repeat(6,minmax(0,1fr))">
-        <div class="stat"><div class="k">CPU</div><div class="v num">${fmtPct(cpuVal(d.cpu))}</div><div class="d">${fmtPct(d.cpu == null ? null : d.cpu / cores())} of all cores</div></div>
-        <div class="stat"><div class="k">Memory</div><div class="v num">${fmtBytes(d.rss)}</div><div class="d">${fmtPct(d.mem)} of RAM (sum of RSS)</div></div>
-        <div class="stat"><div class="k">GPU</div><div class="v num">${fmtPct(d.gpu, 0)}</div><div class="d">${d.gmem ? fmtBytes(d.gmem) + ' VRAM' : '–'}</div></div>
-        <div class="stat"><div class="k">Processes</div><div class="v num">${d.count ?? 0}</div><div class="d">${esc((d.users || []).join(', '))}</div></div>
-        <div class="stat"><div class="k">Threads</div><div class="v num">${d.threads ?? '–'}</div><div class="d">across members</div></div>
-        <div class="stat"><div class="k">Disk I/O</div><div class="v num">${fmtRate((d.ior || 0) + (d.iow || 0))}</div><div class="d">read ${fmtRate(d.ior)} · write ${fmtRate(d.iow)}</div></div>
-      </div><div class="faint" style="margin-top:8px">Oldest member started ${fmtAge(d.started)} ago${f.gone ? ` · <button class="btn" data-removeid="${esc(entKey(f.kind, f.id))}">Remove</button>` : ''}</div></div>`;
-    const mem = d.members || [];
-    const top = mem.slice(0, 8), rest = mem.slice(8);
-    const items = top.map(m => ({label: `${m.name} ${m.pid}`, value: +(cpuVal(m.cpu) || 0).toFixed(2), color: col}));
-    if (rest.length) items.push({label: `${rest.length} others`, value: +rest.reduce((s, m) => s + (cpuVal(m.cpu) || 0), 0).toFixed(2), color: C.text3});
-    setChart('c-mcpu', R.hbars(C, items), true);
+    const head = $('#dhead' + e.slot);
+    if (head) head.innerHTML = appHead(e);
+    const d = e.last || {}, col = slotColor(e.slot), mem = d.members || [];
+    const items = mem.slice(0, 8).map(m => ({label: `${m.name} ${m.pid}`, value: +(cpuVal(m.cpu) || 0).toFixed(2), color: col}));
+    if (mem.length > 8) items.push({label: `${mem.length - 8} others`, value: +mem.slice(8).reduce((s, m) => s + (cpuVal(m.cpu) || 0), 0).toFixed(2), color: C.text3});
+    setChart('c-mcpu' + e.slot, R.hbars(C, items), true);
     const byMem = mem.slice().sort((a, b) => (b.rss || 0) - (a.rss || 0));
     const tm = byMem.slice(0, 10).map(m => ({label: `${m.name} ${m.pid}`, value: m.rss || 0}));
     if (byMem.length > 10) tm.push({label: `${byMem.length - 10} others`, value: byMem.slice(10).reduce((s, m) => s + (m.rss || 0), 0), other: true});
-    setChart('c-mtree', R.treemap(C, tm, col, v => fmtBytes(v)), true);
-  } else {
-    box.dataset.for = entKey(f.kind, f.id);
-    const x = S.details[f.id] || {};
-    const kv = [['PID', f.id], ['App', d.app || x.app || '–'], ['User', d.user || x.username || '–'], ['Status', d.status || x.status || '–'],
-      ['Uptime', fmtAge(d.started || x.started)], ['Parent PID', d.ppid ?? x.ppid ?? '–'], ['Threads', d.threads ?? x.num_threads ?? '–'],
-      ['Open files', x.num_fds ?? '–'], ['Nice', x.nice ?? '–'], ['Executable', x.exe || d.exe || '–'], ['Working dir', x.cwd || '–'],
-      ['Command', x.cmdline ? x.cmdline.join(' ') : d.cmd || '–']];
-    box.innerHTML = `<div class="card ${f.gone ? 'exited' : ''}"><div class="card-h"><h3><span style="color:${col}">●</span> ${esc(f.name)} <span class="faint mono">${f.id}</span></h3>
-      ${f.gone ? `<span class="badge gone">EXITED ${f.goneAt ? f.goneAt.toLocaleTimeString() : ''}</span>` : `<span class="badge ok">${esc(d.status || 'running')}</span>`}</div>
-      <dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd class="${['Executable', 'Working dir', 'Command'].includes(k) ? 'mono' : ''}">${esc(v)}</dd>`).join('')}</dl>
-      ${d.denied ? '<p class="faint" style="margin:8px 0 0">🔒 Some fields are hidden: this process belongs to another user. Run res-watch with more privileges to see them.</p>' : ''}
-      ${f.gone ? `<button class="btn" style="margin-top:10px" data-removeid="${esc(entKey(f.kind, f.id))}">Remove</button>` : ''}</div>`;
+    setChart('c-mtree' + e.slot, R.treemap(C, tm, col, v => fmtBytes(v)), true);
   }
 }
 
@@ -666,8 +689,6 @@ function bindEvents() {
     if (rm) { const x = S.sel[+rm.dataset.remove]; removeSel(x.kind, x.id); selectionChanged(); return; }
     const rid = t.closest('[data-removeid]');
     if (rid) { const [k, ...rest] = rid.dataset.removeid.split(':'); removeSel(k, rest.join(':')); selectionChanged(); return; }
-    const fc = t.closest('[data-focus]');
-    if (fc) { S.focus = +fc.dataset.focus; renderMain(); return; }
     const tab = t.closest('[data-tab]');
     if (tab) { S.tab = tab.dataset.tab; LS.set('tab', S.tab); renderMain(); return; }
     const cv = t.closest('[data-cpuview]');
@@ -677,8 +698,7 @@ function bindEvents() {
     const act = t.closest('[data-act]');
     if (act) {
       const a = act.dataset.act;
-      if (a === 'clear') { S.sel = []; S.focus = 0; selectionChanged(); }
-      else if (a === 'compare') { S.compare = !S.compare; renderMain(); }
+      if (a === 'clear') { S.sel = []; selectionChanged(); }
       else if (a === 'rotate') { S.autoRotate = !S.autoRotate; renderMain(); }
       else if (a === 'resetview') { renderMain(); }
     }

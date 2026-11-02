@@ -47,26 +47,29 @@
     };
   }
 
-  /* per-core bars: ghost = whole system, entities = [{name, color, values}] */
+  /* per-core bars: ghost = whole system; entities = [{name, color, values}] stacked on each core */
   function coreBars(C, ghost, entities) {
     const A = axis(C);
     const cats = ghost.map((_, i) => 'C' + i);
-    const one = entities.length === 1;
-    const series = [];
-    if (one) series.push({name: 'whole system', type: 'bar', data: ghost, barWidth: '58%', z: 1,
-      itemStyle: {color: C.ghost, borderRadius: [4, 4, 0, 0]}});
-    entities.forEach(e => series.push({
-      name: e.name, type: 'bar', data: e.values, z: 2, barWidth: one ? '38%' : undefined, barMaxWidth: 22,
-      barGap: one ? '-82%' : '10%', itemStyle: {color: e.color, borderRadius: [3, 3, 0, 0]},
-      label: one ? {show: ghost.length <= 32, position: 'top', color: C.text2, fontSize: 11,
-        formatter: p => p.value >= 10 ? Math.round(p.value) + '%' : ''} : undefined,
-    }));
+    const totals = ghost.map((_, i) => entities.reduce((s, e) => s + (e.values[i] || 0), 0));
+    const series = [{name: 'whole system', type: 'bar', data: ghost, barWidth: '58%', z: 1,
+      itemStyle: {color: C.ghost, borderRadius: [4, 4, 0, 0]}}];
+    entities.forEach((e, k) => {
+      const top = k === entities.length - 1;
+      series.push({
+        name: e.name, type: 'bar', data: e.values, stack: 'sel', z: 2, barWidth: '38%', barGap: '-82%',
+        itemStyle: {color: e.color, borderRadius: top ? [3, 3, 0, 0] : 0, borderColor: C.surface, borderWidth: entities.length > 1 ? 0.5 : 0},
+        label: top ? {show: ghost.length <= 32, position: 'top', color: C.text2, fontSize: 11,
+          formatter: p => totals[p.dataIndex] >= 10 ? Math.round(totals[p.dataIndex]) + '%' : ''} : undefined,
+      });
+    });
     return {
       animation: false, grid: {left: 44, right: 12, top: 18, bottom: 28},
       tooltip: tip(C, {axisPointer: {type: 'shadow'}, valueFormatter: v => v == null ? '–' : v.toFixed(1) + '%'}),
       xAxis: {type: 'category', data: cats, ...A, splitLine: {show: false},
         axisLabel: {...A.axisLabel, interval: cats.length > 32 ? 3 : cats.length > 16 ? 1 : 0}},
-      yAxis: {type: 'value', max: 100, ...A, axisLine: {show: false}, axisLabel: {...A.axisLabel, formatter: '{value}%'}},
+      yAxis: {type: 'value', max: v => Math.max(100, Math.ceil(v.max / 25) * 25), ...A, axisLine: {show: false},
+        axisLabel: {...A.axisLabel, formatter: '{value}%'}},
       series,
     };
   }
@@ -89,22 +92,35 @@
     };
   }
 
-  /* 3D bars: rows[c][t] -> core x time x % (every other sample to keep it light) */
-  function bars3d(C, times, rows, {autoRotate = false} = {}) {
-    const step = times.length > 30 ? 2 : 1, data = [];
+  /* 3D bars: core x time x %, one stacked series per entity: ents = [{name, color, rows[c][t]}] */
+  function bars3d(C, times, ents, {autoRotate = false} = {}) {
+    const step = times.length > 30 ? 2 : 1;
     const labels = relLabels(times).filter((_, t) => t % step === 0);
-    rows.forEach((row, c) => row.forEach((v, t) => { if (t % step === 0) data.push([c, t / step, v == null ? 0 : +v.toFixed(1)]); }));
+    const ncores = ents.length ? ents[0].rows.length : 0;
+    const series = ents.map(e => {
+      const data = [];  // eslint-disable-line prefer-const
+      // bar3D stacks by data index, so every series must keep every (core, time) point in the same order.
+      // Dropping zeros (or using '-') shifts or breaks the stack; instead zeros stay as 0 and are made invisible,
+      // otherwise they render as flat tiles on the floor and on top of other series.
+      e.rows.forEach((row, c) => row.forEach((v, t) => {
+        if (t % step) return;
+        const z = v == null ? 0 : +v.toFixed(1);
+        data.push(z > 0.2 ? {value: [c, t / step, z]} : {value: [c, t / step, 0], itemStyle: {opacity: 0}});
+      }));
+      return {type: 'bar3D', name: e.name, stack: 'sel', data, shading: 'lambert', bevelSize: 0.15,
+        itemStyle: {color: e.color, opacity: 1}, animation: false};
+    });
     return {
-      tooltip: {}, visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q.slice(1)}},
-      xAxis3D: {type: 'category', name: 'core', data: rows.map((_, i) => 'C' + i), axisLabel: {color: C.text3},
+      tooltip: {formatter: p => `${p.seriesName}<br>C${p.value[0]} · ${labels[p.value[1]]}: <b>${p.value[2]}%</b>`},
+      xAxis3D: {type: 'category', name: 'core', data: Array.from({length: ncores}, (_, i) => 'C' + i), axisLabel: {color: C.text3},
         nameTextStyle: {color: C.text2}},
       yAxis3D: {type: 'category', name: 'time', data: labels, axisLabel: {color: C.text3, interval: 9}, nameTextStyle: {color: C.text2}},
-      zAxis3D: {type: 'value', name: '%', max: 100, min: 0, axisLabel: {color: C.text3}, nameTextStyle: {color: C.text2}},
+      zAxis3D: {type: 'value', name: '%', min: 0, axisLabel: {color: C.text3}, nameTextStyle: {color: C.text2}},
       grid3D: {boxWidth: 150, boxDepth: 110, boxHeight: 60,
         axisLine: {lineStyle: {color: C.text3}}, splitLine: {lineStyle: {color: C.grid}}, axisPointer: {lineStyle: {color: C.text2}},
         viewControl: {alpha: 22, beta: 38, distance: 215, autoRotate, autoRotateSpeed: 6},
         light: {main: {intensity: 1.15, shadow: true, alpha: 40, beta: 30}, ambient: {intensity: 0.35}}},
-      series: [{type: 'bar3D', data, shading: 'lambert', bevelSize: 0.2, itemStyle: {opacity: 1}, animation: false}],
+      series,
     };
   }
 
@@ -189,5 +205,14 @@
       `<path d="M${pts.join(' L')}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
   }
 
-  window.RWCharts = {colors, line, coreBars, heat, bars3d, surface3d, gauge, lanes, hbars, treemap, spark, relLabels};
+  /* several sparklines in one box: lines = [{values, color}] */
+  function sparkMulti(lines, max = 100) {
+    const n = Math.max(0, ...lines.map(l => l.values.length));
+    if (n < 2) return '';
+    const path = vals => vals.map((v, i) => `${i ? 'L' : 'M'}${(i / (n - 1) * 100).toFixed(1)},${(26 - Math.min(1, (v || 0) / max) * 24).toFixed(1)}`).join(' ');
+    return `<svg viewBox="0 0 100 26" preserveAspectRatio="none" width="100%" height="26" aria-hidden="true">` +
+      lines.map(l => `<path d="${path(l.values)}" fill="none" stroke="${l.color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`).join('') + '</svg>';
+  }
+
+  window.RWCharts = {colors, line, coreBars, heat, bars3d, surface3d, gauge, lanes, hbars, treemap, spark, sparkMulti, relLabels};
 })();
