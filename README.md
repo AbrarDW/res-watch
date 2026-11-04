@@ -2,15 +2,26 @@
 
 See what each **app or process** on a machine is using, live: CPU (including **per core**), GPU, memory and disk I/O, in 2D and 3D charts. The backend is Python (FastAPI + psutil) and the frontend is a web UI. It runs on your laptop or on a VPS.
 
-![Overview](design/ref-overview.png)
+![Overview: two processes and the python app selected](docs/screenshots/overview.png)
 
-- **Apps / Processes / Tree** sidebar. Processes are grouped into apps, for example all 23 Chrome processes become one `chrome` app. You can chart a whole app, a single process, or a mix of both.
+- **Apps / Processes / Tree** sidebar. Processes are grouped into apps, for example all 23 Chrome processes become one `chrome` app. You can chart a whole app, a single process, or a mix of both. **Group by** can also group by executable or by user.
 - **Filters:** mine/all/system users, hide kernel threads and system services, GPU users only, minimum CPU %, and process status. They are remembered in the browser.
+- **Charts start with history:** the server keeps the last minute for every process, so a newly selected item shows it straight away, and your selection comes back after a page reload.
 - **Everything you select is shown together:** tick several apps and/or processes and each one gets its own colour in every chart and its own section in Details.
-- **CPU per core:** bars stacked by selection over whole-system usage, one core × time heatmap per selection, and a rotatable 3D view stacked by selection. Per-process per-core usage is Linux only, see [Notes](#notes).
+- **CPU per core:** bars stacked by selection over whole-system usage, one core × time heatmap per selection, and a rotatable 3D view stacked by selection (it keeps your camera angle; hidden on phones narrower than 480px). Per-process per-core usage is Linux only, see [Notes](#notes).
 - **GPU:** utilisation, memory, temperature, power, and the SM, memory, encoder and decoder engines, plus GPU use per process. NVIDIA is supported via NVML; AMD support is best effort via `amdsmi`.
 - **Details:** for an app, CPU per member process and a memory treemap; for a process, its command line, user, threads and open files.
 - **Built-in login** for remote servers. It is off on localhost.
+
+## Screenshots
+
+These come from the running app on a small 4-core Linux machine with no GPU.
+
+| CPU per core, stacked by selection | One app in detail |
+|---|---|
+| ![CPU per core](docs/screenshots/cpu-per-core.png) | ![App details](docs/screenshots/app-details.png) |
+| **3D view (core × time × usage)** | **Filters and "Group by"** |
+| ![3D view](docs/screenshots/cpu-3d.png) | ![Filters](docs/screenshots/filters.png) |
 
 ## Quick start
 
@@ -154,6 +165,7 @@ What's left to do, and in what order, is in [`docs/ROADMAP.md`](docs/ROADMAP.md)
   - `main.py`: API and WebSocket
   - `setup_wizard.py` and `templates/`: the setup script
 - `static/`: frontend (ECharts 5.6 and ECharts-GL 2.0.9 are vendored in `static/vendor/`, so it works offline)
-- `design/`: the static mockup and the reference images
+- `design/`: the static mockup with sample data (16 cores, a GPU) and its reference images; rebuild them with `node design/render.js`
+- `docs/screenshots/`: real screenshots used in this README
 
 Licences for the vendored chart libraries are in `static/vendor/LICENSE-*` (Apache-2.0).

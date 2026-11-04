@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="../static/style.css">
 <script src="../static/vendor/echarts.min.js"></script>
 <script src="../static/vendor/echarts-gl.min.js"></script>
+<script src="../static/charts.js"></script>
 </head>
 <body>
 <!--
@@ -92,7 +93,6 @@ const chromeApp = {kind: 'app', key: 'chrome', name: 'chrome', pid: '×23', coun
 const selected = EMPTY ? [] : [procs[0], chromeApp];
 selected.forEach((p, i) => p.color = C.s[i]);
 const focus = selected[0];
-const focusIdx = TAB === 'details' ? 1 : 0;
 
 // apps (grouped by cgroup scope / exe tree) — "Mine" filter active, so root/system apps are hidden
 const apps = [
@@ -230,10 +230,10 @@ const lineOpt = (series, {unit = '', max} = {}) => ({
 
 function focusBar() {
   return `<div class="focusbar">
-    <span class="faint">Focus</span>
-    ${selected.map((p, i) => `<span class="chip ${i === focusIdx ? 'active' : ''}" style="--c:${p.color}"><span class="dot ${p.kind === 'app' ? 'sq' : ''}"></span>${p.kind === 'app' ? '▣ ' : ''}${p.name} <span class="faint mono">${p.pid}</span><span class="x">×</span></span>`).join('')}
+    <span class="faint">Selected</span>
+    ${selected.map((p, i) => `<span class="chip" style="--c:${p.color}"><span class="dot ${p.kind === 'app' ? 'sq' : ''}"></span>${p.kind === 'app' ? '▣ ' : ''}${p.name} <span class="faint mono">${p.pid}</span><span class="x">×</span></span>`).join('')}
     <span class="spacer" style="flex:1"></span>
-    <button class="btn">Compare</button><button class="btn">Clear</button>
+    <button class="btn">Clear</button>
   </div>
   <div class="tabs">
     ${[['overview','Overview'],['cpu','CPU per core'],['gpu','GPU'],['details','Details']].map(([k, l]) => `<button class="tab ${k === TAB ? 'active' : ''}">${l}</button>`).join('')}
@@ -280,70 +280,40 @@ if (EMPTY) {
                       {name: 'chrome read', data: walk(60, 80, 0, 300), color: selected[1].color},
                       {name: 'chrome write', data: walk(30, 40, 0, 150), color: selected[1].color, lineStyle: {width: 2, type: 'dashed'}}]));
 } else if (TAB === 'cpu') {
+  // Same builders as the app (static/charts.js), fed with sample data for both selections.
+  const R = window.RWCharts, CC = R.colors();
+  const chromeHist = Array.from({length: CORES}, (_, c) => walk(procCoreNow[4821][c], 8, 0, 40));
+  const ents = selected.map(p => p.kind === 'app'
+    ? {name: 'chrome ×23', color: p.color, now: procCoreNow[4821], hist: chromeHist}
+    : {name: `${p.name} ${p.pid}`, color: p.color, now: procCoreNow[9134], hist: coreHist});
+  const times = Array.from({length: N}, (_, i) => i);
+  const lg = items => `<div class="legend">${items.map(([l, c, cls]) => `<span><i class="${cls || ''}" style="--c:${c}"></i>${l}</span>`).join('')}</div>`;
   main.innerHTML = focusBar() + `
     <div class="toolbar">
       <div class="seg">${[['bars','Bars'],['heatmap','Heatmap'],['3d','3D']].map(([k, l]) => `<button class="${k === VIEW ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <span class="faint">${focus.name} ${focus.pid} · 9 threads on 16 logical cores</span>
+      <span class="faint">2 selected · 321 threads on 16 logical cores</span>
       <span class="spacer" style="flex:1"></span>
-      ${VIEW === 'bars' ? legend([['this process', focus.color], ['whole system', '', 'ghost']])
-        : `<span class="ramp">0% <b></b> 100%</span>`}
+      ${VIEW === 'heatmap' ? '<span class="ramp">0% <b></b> 100%</span>' : lg([...ents.map(e => [e.name, e.color]), ...(VIEW === 'bars' ? [['whole system', '', 'ghost']] : [])])}
       ${VIEW === '3d' ? '<button class="btn">⟲ Auto-rotate</button><button class="btn">Reset view</button>' : ''}
     </div>
-    <div class="card">
-      <div class="card-h"><h3>${VIEW === 'bars' ? 'Usage per logical core — now' : VIEW === 'heatmap' ? 'Usage per core over the last 60 s' : '3D · core × time × usage'}</h3>
-        <span class="sub">${VIEW === '3d' ? 'drag to rotate · scroll to zoom' : 'Linux: thread CPU time attributed to the core it last ran on'}</span></div>
-      <div class="chart ${VIEW === '3d' ? 'xl' : 'tall'}" id="c-main"></div>
-    </div>
-    <div class="card"><div class="card-h"><h3>Cores</h3><span class="sub">${focus.name} share of each core · sparkline = last 60 s</span></div>
+    ${VIEW === 'heatmap'
+      ? ents.map((e, i) => `<div class="card"><div class="card-h"><h3><span style="color:${e.color}">${i ? '■' : '●'}</span> ${e.name}</h3><span class="sub">usage per core over the last 60 samples</span></div><div class="chart" id="c-heat${i}" style="height:290px"></div></div>`).join('')
+      : `<div class="card"><div class="card-h"><h3>${VIEW === 'bars' ? 'Usage per logical core — now' : '3D · core × time × usage'}</h3>
+          <span class="sub">${VIEW === '3d' ? 'stacked by selection · drag to rotate · scroll to zoom' : 'stacked by selection · thread CPU time credited to the core it last ran on'}</span></div>
+          <div class="chart ${VIEW === '3d' ? 'xl' : 'tall'}" id="c-main"></div></div>`}
+    <div class="card"><div class="card-h"><h3>Cores</h3><span class="sub">share of each core taken by the selection · one line per item, last 60 samples</span></div>
       <div class="cores" id="cores"></div></div>`;
-  const cats = sysCores.map((_, i) => 'C' + i);
-  if (VIEW === 'bars') {
-    mk('c-main', {
-      animation: false, grid: {left: 44, right: 12, top: 16, bottom: 28}, tooltip: {...tip, axisPointer: {type: 'shadow'}},
-      xAxis: {type: 'category', data: cats, ...baseAxis, splitLine: {show: false}},
-      yAxis: {type: 'value', max: 100, ...baseAxis, axisLine: {show: false}, axisLabel: {...baseAxis.axisLabel, formatter: '{value}%'}},
-      series: [
-        {name: 'system', type: 'bar', data: sysCores, barWidth: '58%', itemStyle: {color: C.ghost, borderRadius: [4, 4, 0, 0]}, z: 1},
-        {name: focus.name, type: 'bar', data: procCoreNow[focus.pid].map(v => +v.toFixed(1)), barWidth: '38%', barGap: '-82%',
-         itemStyle: {color: focus.color, borderRadius: [4, 4, 0, 0]}, z: 2,
-         label: {show: true, position: 'top', color: C.text2, fontSize: 11, formatter: p => p.value >= 10 ? Math.round(p.value) + '%' : ''}},
-      ],
-    });
-  } else if (VIEW === 'heatmap') {
-    const data = [];
-    coreHist.forEach((row, c) => row.forEach((v, t) => data.push([t, c, +v.toFixed(1)])));
-    mk('c-main', {
-      animation: false, grid: {left: 44, right: 16, top: 8, bottom: 28},
-      tooltip: {backgroundColor: C.surface, borderColor: C.border, textStyle: {color: C.text}, formatter: p => `C${p.value[1]} · ${timeLabels[p.value[0]]}: <b>${p.value[2]}%</b>`},
-      xAxis: {type: 'category', data: timeLabels, ...baseAxis, splitLine: {show: false}, axisLabel: {...baseAxis.axisLabel, interval: 9}},
-      yAxis: {type: 'category', data: cats, inverse: true, ...baseAxis, splitLine: {show: false}},
-      visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q}},
-      series: [{type: 'heatmap', data, itemStyle: {borderColor: C.surface, borderWidth: 1}}],
-    });
-  } else {
-    const data = [];
-    coreHist.forEach((row, c) => row.forEach((v, t) => { if (t % 2 === 1) data.push([c, (t - 1) / 2, +v.toFixed(1)]); }));
-    mk('c-main', {
-      tooltip: {}, visualMap: {show: false, min: 0, max: 100, inRange: {color: C.q.slice(1)}},
-      xAxis3D: {type: 'category', name: 'core', data: cats, axisLabel: {color: C.text3, interval: 1}, nameTextStyle: {color: C.text2}},
-      yAxis3D: {type: 'category', name: 'time', data: timeLabels.filter((_, t) => t % 2 === 1), axisLabel: {color: C.text3, interval: 9}, nameTextStyle: {color: C.text2}},
-      zAxis3D: {type: 'value', name: '%', max: 100, axisLabel: {color: C.text3}, nameTextStyle: {color: C.text2}},
-      grid3D: {boxWidth: 150, boxDepth: 110, boxHeight: 60,
-        axisLine: {lineStyle: {color: C.text3}}, splitLine: {lineStyle: {color: C.grid}}, axisPointer: {lineStyle: {color: C.text2}},
-        viewControl: {alpha: 22, beta: 38, distance: 195, autoRotate: false},
-        light: {main: {intensity: 1.15, shadow: true, alpha: 40, beta: 30}, ambient: {intensity: 0.35}}},
-      series: [{type: 'bar3D', data, shading: 'lambert', bevelSize: 0.2, itemStyle: {opacity: 1}}],
-    });
-  }
-  // core mini-cards
-  document.getElementById('cores').innerHTML = procCoreNow[focus.pid].map((v, i) => `
-    <div class="core ${v > 50 ? 'hot' : ''}" style="--c:${focus.color}"><div class="t"><span>C${i}</span><span>sys ${sysCores[i]}%</span></div>
-    <div class="v num">${v.toFixed(v < 10 ? 1 : 0)}%</div><div class="spark" id="sp${i}"></div></div>`).join('');
-  coreHist.forEach((row, i) => mk('sp' + i, {
-    animation: false, grid: {left: 0, right: 0, top: 2, bottom: 0},
-    xAxis: {type: 'category', show: false, data: timeLabels, boundaryGap: false}, yAxis: {type: 'value', show: false, max: 100},
-    series: [{type: 'line', data: row, showSymbol: false, lineStyle: {width: 1.5, color: focus.color}, areaStyle: {color: focus.color, opacity: 0.12}}],
-  }));
+  if (VIEW === 'bars') mk('c-main', R.coreBars(CC, sysCores, ents.map(e => ({name: e.name, color: e.color, values: e.now.map(v => +v.toFixed(1))}))));
+  else if (VIEW === 'heatmap') ents.forEach((e, i) => mk('c-heat' + i, R.heat(CC, times, e.hist)));
+  else mk('c-main', R.bars3d(CC, times, ents.map(e => ({name: e.name, color: e.color, rows: e.hist}))));
+  document.getElementById('cores').innerHTML = sysCores.map((sv, i) => {
+    const parts = ents.map(e => ({v: e.now[i], c: e.color}));
+    const tot = parts.reduce((t, x) => t + x.v, 0), lead = parts.reduce((a, x) => x.v > a.v ? x : a);
+    return `<div class="core ${tot > 50 ? 'hot' : ''}" style="--c:${lead.c}"><div class="t"><span>C${i}</span><span>sys ${sv}%</span></div>
+      <div class="v num">${tot.toFixed(tot < 10 ? 1 : 0)}%</div>
+      <div class="segbar">${parts.filter(x => x.v > 0).map(x => `<i style="width:${Math.min(100, x.v)}%;background:${x.c}"></i>`).join('')}</div>
+      <div class="spark">${R.sparkMulti(ents.map(e => ({values: e.hist[i], color: e.color})))}</div></div>`;
+  }).join('');
 } else if (TAB === 'gpu') {
   main.innerHTML = focusBar() + `
     <div class="toolbar"><div class="seg"><button class="${VIEW === '2d' ? 'on' : ''}">2D</button><button class="${VIEW === '3d' ? 'on' : ''}">3D</button></div>
