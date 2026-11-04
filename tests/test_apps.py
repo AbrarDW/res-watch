@@ -89,3 +89,31 @@ def test_spawned_children_form_one_app():
         for p in __import__("psutil").Process(parent.pid).children():
             p.kill()
         parent.kill()
+
+
+def test_windows_display_name_is_used_but_key_unchanged(monkeypatch):
+    from reswatch import apps
+    monkeypatch.setattr(apps, "IS_WINDOWS", True)
+    monkeypatch.setattr(apps, "windows_product_name", lambda exe: "Microsoft Edge" if exe and "msedge" in exe else None)
+    procs = {10: {"pid": 10, "ppid": 1, "name": "msedge.exe", "exe": "C:\\Program Files\\Microsoft\\Edge\\msedge.exe"},
+             11: {"pid": 11, "ppid": 10, "name": "msedge.exe", "exe": "C:\\Program Files\\Microsoft\\Edge\\msedge.exe"},
+             20: {"pid": 20, "ppid": 1, "name": "tool.exe", "exe": "C:\\tools\\tool.exe"}}
+    no_cg = lambda pid: ""
+    assert apps.resolve_app(11, procs, no_cg) == ("msedge", "Microsoft Edge")
+    assert apps.resolve_app(20, procs, no_cg) == ("tool", "tool")     # no version info: exe name
+
+
+def test_windows_product_name_is_none_off_windows():
+    from reswatch import apps
+    if not apps.IS_WINDOWS:
+        assert apps.windows_product_name(sys.executable) is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows version-info API")
+def test_windows_product_name_reads_real_files():
+    from reswatch import apps
+    notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "notepad.exe")
+    name = apps.windows_product_name(notepad)
+    assert name and "notepad" in name.lower(), name
+    assert apps.windows_product_name(sys.executable)          # python.exe has version info ("Python")
+    assert apps.windows_product_name(r"C:\does\not\exist.exe") is None
