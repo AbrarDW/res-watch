@@ -1,8 +1,8 @@
 # res-watch roadmap: pending work
 
 > **Progress (on PR #2):**
-> - Done: 1.1 CI · 2.1 Group by · 2.2 no 3D on small phones · 3.1 history backfill · 3.2 keep the 3D camera · 3.4 design images and real screenshots
-> - Left: 1.2 manual hardware checks (owner) · 2.3 Windows product names · 3.3 fairer totals
+> - Done: 1.1 CI · 2.1 Group by · 2.2 no 3D on small phones · 2.3 Windows product names · 3.1 history backfill · 3.2 keep the 3D camera · 3.3 fairer totals (PSS option; the overlap note stays) · 3.4 design images and real screenshots
+> - Left: 1.2 manual hardware checks on the owner's machines
 
 Status as of PR #1 (merged into `master`): the app, the setup wizard and the login are built and covered by 64 tests, but several things have only been tested on Linux in a cloud container without a GPU or a Docker registry. This file lists what is left, in the order we plan to do it. Each item says why it matters, how to do it, which files it touches and when it counts as done.
 

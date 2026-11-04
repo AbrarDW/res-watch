@@ -3,6 +3,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from reswatch.gpu import NullGpu
 from reswatch.monitor import Collector
 
@@ -102,3 +104,18 @@ def test_history_is_bounded():
     assert len(c.hist_ts) == HISTORY and len(c.hist[1][1]) == HISTORY
     c._record({}, time.time())          # process gone -> its history is dropped
     assert c.hist == {}
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PSS is Linux only")
+def test_pss_sampled_for_watched_processes_only():
+    c = make()
+    me = os.getpid()
+    snap = c.tick([("pid", me, False)])
+    rec = snap["procs"][me]
+    assert rec.get("pss") and 0 < rec["pss"] <= rec["rss"] * 1.05
+    ent = c.entity(snap, "pid", me)
+    assert ent["pss"] == rec["pss"]
+    others = [p for pid, p in snap["procs"].items() if pid != me and p["ppid"] != me]
+    assert all("pss" not in p for p in others)   # not watched -> not sampled
+    app = c.entity(c.tick([("app", "python", False)]), "app", "python")
+    assert app["pss"] is not None and app["pss"] <= app["rss"] * 1.05

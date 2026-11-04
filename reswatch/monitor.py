@@ -26,6 +26,7 @@ IS_LINUX = sys.platform.startswith("linux")
 SYSTEM_USERS = {"root", "system", "nt authority\\system", "local service", "network service",
                 "nt authority\\local service", "nt authority\\network service"}
 MAX_MEMBERS = 200
+MAX_PSS = 400           # cap on processes whose PSS is sampled per tick
 HISTORY = 60            # samples kept per process for backfilling new selections
 HIST_FIELDS = ("cpu", "rss", "ior", "iow", "gpu", "gmem")
 
@@ -192,11 +193,26 @@ class Collector:
         for kind, ident, children in specs:
             watched.update(self.resolve_pids(procs, kind, ident, children))
         percore = self.percore.sample(sorted(watched), now) if watched else {}
+        if IS_LINUX:
+            self._sample_pss(procs, watched)
 
         system = self._system(procs)
         self.snapshot = {"ts": time.time(), "system": system, "procs": procs, "percore": percore}
         self._record(procs, self.snapshot["ts"])
         return self.snapshot
+
+    @staticmethod
+    def _sample_pss(procs: dict, pids) -> None:
+        """PSS (shared pages split between the processes sharing them) for watched processes only:
+        it reads /proc/<pid>/smaps_rollup, too slow to do for every process every tick."""
+        for pid in sorted(pids)[:MAX_PSS]:
+            rec = procs.get(pid)
+            if rec is None:
+                continue
+            try:
+                rec["pss"] = psutil.Process(pid).memory_full_info().pss
+            except (psutil.Error, OSError, AttributeError):
+                pass
 
     def _system(self, procs) -> dict:
         per_core = psutil.cpu_percent(percpu=True)
@@ -265,6 +281,7 @@ class Collector:
             "cores": self.ncpu,
             "cores_physical": self.ncpu_phys,
             "percore_supported": self.percore.supported,
+            "pss_supported": IS_LINUX,
             "gpu": self.gpu.info(),
         }
 
@@ -310,7 +327,7 @@ class Collector:
             "gone": False,
             "cpu": total("cpu"), "rss": total("rss"), "mem": total("mem"),
             "threads": total("threads"), "ior": total("ior"), "iow": total("iow"),
-            "gpu": total("gpu"), "gmem": total("gmem"),
+            "gpu": total("gpu"), "gmem": total("gmem"), "pss": total("pss"),
         })
         cores = None
         if self.percore.supported:

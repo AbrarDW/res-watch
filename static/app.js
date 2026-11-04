@@ -22,7 +22,7 @@ const S = {
   expanded: new Set(LS.get('expanded', [])), showAll: new Set(), popover: false,
   sel: [],
   tab: LS.get('tab', 'overview'), cpuView: LS.get('cpuView', 'bars'), gpuView: LS.get('gpuView', '2d'),
-  children: LS.get('children', true), normalize: LS.get('normalize', false), every: LS.get('every', 1),
+  children: LS.get('children', true), normalize: LS.get('normalize', false), pss: LS.get('pss', false), every: LS.get('every', 1),
   paused: false, autoRotate: false, theme: LS.get('theme', 'auto'),
   sys: null, times: [], gpuHist: [], details: {}, ws: null, connected: false,
 };
@@ -54,6 +54,7 @@ function fmtAge(started) {
 }
 const cores = () => (S.meta && S.meta.cores) || 1;
 const cpuVal = v => v == null ? null : (S.normalize ? v / cores() : v);
+const usePss = () => !!(S.pss && S.meta && S.meta.pss_supported);
 const cpuUnit = () => S.normalize ? '% of all cores' : '% of one core';
 const pushN = (arr, v) => { arr.push(v); if (arr.length > HIST) arr.shift(); };
 const entKey = (kind, id) => `${kind}:${id}`;
@@ -261,7 +262,7 @@ function addSel(kind, id) {
   while (used.has(slot)) slot++;
   const p = kind === 'pid' ? S.byPid.get(+id) : null;
   const e = {kind, id: kind === 'pid' ? +id : id, slot, name: p ? p.name : id, last: null, gone: false, goneAt: null,
-    h: {cpu: [], rss: [], ior: [], iow: [], gpu: [], gmem: [], cores: []}};
+    h: {cpu: [], rss: [], pss: [], ior: [], iow: [], gpu: [], gmem: [], cores: []}};
   for (let i = 0; i < S.times.length; i++) for (const k in e.h) e.h[k].push(null);
   S.sel.push(e);
 }
@@ -355,7 +356,7 @@ function onTick(msg) {
     if (d && (!e.last || e.last.count !== d.count || e.gone !== !!d.gone)) relabel = true;
     if (d && !d.gone) {
       e.last = d; e.gone = false; e.name = d.name || e.name;
-      pushN(e.h.cpu, d.cpu); pushN(e.h.rss, d.rss); pushN(e.h.ior, d.ior); pushN(e.h.iow, d.iow);
+      pushN(e.h.cpu, d.cpu); pushN(e.h.rss, d.rss); pushN(e.h.pss, d.pss); pushN(e.h.ior, d.ior); pushN(e.h.iow, d.iow);
       pushN(e.h.gpu, d.gpu); pushN(e.h.gmem, d.gmem); pushN(e.h.cores, d.per_core);
     } else {
       if (d && d.gone && !e.gone) { e.gone = true; e.goneAt = new Date(); }
@@ -460,12 +461,13 @@ function renderMain() {
   if (S.tab === 'overview') {
     h += `<div class="toolbar"><label><input type="checkbox" data-opt="children" ${S.children ? 'checked' : ''}> Include child processes</label>
       <label><input type="checkbox" data-opt="normalize" ${S.normalize ? 'checked' : ''}> Normalise CPU by cores</label>
+      ${S.meta && S.meta.pss_supported ? `<label title="PSS splits memory shared between processes fairly instead of counting it once per process (Linux)"><input type="checkbox" data-opt="pss" ${S.pss ? 'checked' : ''}> Fair memory (PSS)</label>` : ''}
       <span style="flex:1"></span>${selLegend()}</div>
       <div class="grid g2">
         <div class="card"><div class="card-h"><h3>CPU</h3><span class="sub">${cpuUnit()} · last ${HIST} samples</span></div><div class="chart" id="c-cpu"></div></div>
         ${gpuOk ? '<div class="card"><div class="card-h"><h3>GPU</h3><span class="sub">utilisation</span></div><div class="chart" id="c-gpu"></div></div>'
           : `<div class="card"><div class="card-h"><h3>GPU</h3></div><div class="note" style="margin-top:8px">GPU metrics unavailable. ${esc(S.meta && S.meta.gpu ? S.meta.gpu.reason : '')}</div></div>`}
-        <div class="card"><div class="card-h"><h3>Memory</h3><span class="sub">resident set size${S.sel.some(isGroup) ? ' (sum for groups)' : ''}</span></div><div class="chart" id="c-mem"></div></div>
+        <div class="card"><div class="card-h"><h3>Memory</h3><span class="sub">${usePss() ? 'PSS: shared pages split between processes' : 'resident set size' + (S.sel.some(isGroup) ? ' (sum for groups)' : '')}</span></div><div class="chart" id="c-mem"></div></div>
         <div class="card"><div class="card-h"><h3>Disk I/O</h3><span class="sub">solid = read, dashed = write</span></div><div class="chart" id="c-io"></div></div>
       </div>
       <div class="grid g2" id="statcards"></div>`;
@@ -524,7 +526,7 @@ function updateMain() {
     S.sel.forEach((e, i) => {
       const c = slotColor(e.slot), nm = label(e);
       cpuS.push({name: nm, data: e.h.cpu.map(cpuVal), color: c, area: i === 0});
-      memS.push({name: nm, data: e.h.rss, color: c, area: i === 0});
+      memS.push({name: nm, data: usePss() ? e.h.pss : e.h.rss, color: c, area: i === 0});
       gpuS.push({name: nm, data: e.h.gpu, color: c, area: i === 0});
       ioS.push({name: nm + ' read', data: e.h.ior, color: c}, {name: nm + ' write', data: e.h.iow, color: c, dashed: true});
     });
@@ -539,7 +541,7 @@ function updateMain() {
         ${e.gone ? `<span class="badge gone">EXITED ${e.goneAt ? e.goneAt.toLocaleTimeString() : ''}</span>` : `<span class="badge ok">${esc(isGroup(e) ? 'running' : d.status || '…')}</span>`}</div>
         <div class="stats">
           <div class="stat"><div class="k">CPU</div><div class="v num">${fmtPct(cpuVal(d.cpu))}</div></div>
-          <div class="stat"><div class="k">Memory</div><div class="v num">${fmtBytes(d.rss)}</div></div>
+          <div class="stat"><div class="k">Memory${usePss() ? ' (PSS)' : ''}</div><div class="v num">${fmtBytes(usePss() && d.pss != null ? d.pss : d.rss)}</div></div>
           <div class="stat"><div class="k">GPU</div><div class="v num">${fmtPct(d.gpu, 0)}</div></div>
           <div class="stat"><div class="k">Threads</div><div class="v num">${d.threads ?? '–'}</div></div>
         </div><div class="faint mono ellipsis" style="margin-top:6px">${esc(isGroup(e) ? `${nproc(d.count)} · ${(d.users || []).join(', ')}` : d.cmd || '')}</div>
@@ -630,7 +632,7 @@ function appHead(e) {
   return `<div class="card ${e.gone ? 'exited' : ''}"><div class="card-h"><h3><span class="avatar" style="background:${col};color:#fff">${esc((e.name[0] || '?').toUpperCase())}</span>${esc(e.name)} <span class="faint">· ${GROUPS[e.kind] ? GROUPS[e.kind].one : 'group'} · ${nproc(d.count)}</span></h3>${e.gone ? '<span class="badge gone">EXITED</span>' : '<span class="badge ok">running</span>'}</div>
     <div class="stats stats6">
       <div class="stat"><div class="k">CPU</div><div class="v num">${fmtPct(cpuVal(d.cpu))}</div><div class="d">${fmtPct(d.cpu == null ? null : d.cpu / cores())} of all cores</div></div>
-      <div class="stat"><div class="k">Memory</div><div class="v num">${fmtBytes(d.rss)}</div><div class="d">${fmtPct(d.mem)} of RAM (sum of RSS)</div></div>
+      <div class="stat"><div class="k">Memory</div><div class="v num">${fmtBytes(d.rss)}</div><div class="d">${fmtPct(d.mem)} of RAM (sum of RSS)${d.pss != null ? ` · PSS ${fmtBytes(d.pss)}` : ''}</div></div>
       <div class="stat"><div class="k">GPU</div><div class="v num">${fmtPct(d.gpu, 0)}</div><div class="d">${d.gmem ? fmtBytes(d.gmem) + ' VRAM' : '–'}</div></div>
       <div class="stat"><div class="k">Processes</div><div class="v num">${d.count ?? 0}</div><div class="d">${esc((d.users || []).join(', '))}</div></div>
       <div class="stat"><div class="k">Threads</div><div class="v num">${d.threads ?? '–'}</div><div class="d">across members</div></div>

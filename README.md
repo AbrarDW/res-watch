@@ -142,7 +142,7 @@ sudo ufw enable
 ## Notes
 
 - **Per-core usage of a single process** is only available on Linux. Each thread's CPU time is credited to the core it last ran on (from `/proc/<pid>/task/*/stat`), so a thread that moved mid-interval is counted on its new core; the per-core values always add up to the process total. On macOS and Windows the CPU tab shows whole-system usage per core.
-- **App memory** is the sum of the members' RSS, so shared pages are counted more than once.
+- **App memory** is the sum of the members' RSS by default, so shared pages are counted more than once. On Linux, tick **Fair memory (PSS)** on the Overview tab to split shared pages between the processes using them instead; it is sampled only for what you have selected, and the Details tab shows both.
 - **Permissions:** run as a normal user and you'll see everything about your own processes. For other users' processes, some fields (I/O, executable path) show 🔒 n/a unless res-watch runs with more privileges.
 - **How processes are grouped into apps:** first macOS `.app` bundles, then Linux systemd/snap/flatpak app scopes (except terminal-like launchers), then the process tree: a process joins its parent if they share an executable or a non-generic install folder.
 - **GPU:** if no NVIDIA or AMD driver is found, the GPU tab says "GPU metrics unavailable" and everything else keeps working.
