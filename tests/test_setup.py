@@ -177,3 +177,16 @@ def test_nginx_ipv6_listen_only_when_available(tmp_path, monkeypatch, v6, expect
     active = [l.strip() for l in conf.splitlines() if l.strip().startswith("listen [::]")]
     assert bool(active) == expect_active
     assert "listen 80;" in conf and "listen 443 ssl;" in conf
+
+
+def test_toml_roundtrip_with_and_without_tomllib(tmp_path, monkeypatch):
+    """Python 3.10 has no tomllib; the fallback reader must return the same values (types included)."""
+    import reswatch.config as cfg
+    data = {"host": "127.0.0.1", "port": 8000, "interval": 1.5, "trusted_proxy": False, "auth": "on",
+            "q": 'he said "hi" \\o/', "hash": "a # not a comment", "empty": ""}
+    path = tmp_path / "c.toml"
+    cfg.write_toml(path, data, header="# header\n# second line")
+    if cfg._toml is not None:
+        assert cfg.read_toml(path) == data
+    monkeypatch.setattr(cfg, "_toml", None)
+    assert cfg.read_toml(path) == data

@@ -114,13 +114,52 @@ def read_toml(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     if _toml is not None:
         return _toml.loads(text)
-    out: dict = {}  # minimal flat key = value parser (3.10)
+    return parse_flat_toml(text)
+
+
+def _toml_value(raw: str):
+    """One value of the flat TOML subset write_toml produces: bool, int, float or "string"."""
+    if raw.startswith('"'):
+        out, i = [], 1
+        while i < len(raw):
+            ch = raw[i]
+            if ch == "\\" and i + 1 < len(raw):
+                nxt = raw[i + 1]
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt, nxt))
+                i += 2
+                continue
+            if ch == '"':
+                return "".join(out), raw[i + 1:]
+            out.append(ch)
+            i += 1
+        raise ValueError(f"unterminated string: {raw}")
+    token, _, rest = raw.partition("#")
+    token = token.strip()
+    if token in ("true", "false"):
+        return token == "true", ""
+    try:
+        return int(token), ""
+    except ValueError:
+        pass
+    try:
+        return float(token), ""
+    except ValueError:
+        return token.strip("'"), ""
+
+
+def parse_flat_toml(text: str) -> dict:
+    """Fallback for Python 3.10 (no tomllib): flat `key = value` lines, comments and blank lines.
+    Good for the files res-watch writes; tables and arrays are not supported (and not used)."""
+    out: dict = {}
     for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if "=" not in line or line.startswith("["):
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("[") or "=" not in line:
             continue
-        k, v = (s.strip() for s in line.split("=", 1))
-        out[k] = v.strip('"').strip("'") if v[:1] in "\"'" else v
+        key, _, raw = line.partition("=")
+        value, rest = _toml_value(raw.strip())
+        if rest.strip() and not rest.strip().startswith("#"):
+            raise ValueError(f"unexpected text after value: {line}")
+        out[key.strip()] = value
     return out
 
 
