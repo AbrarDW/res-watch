@@ -341,8 +341,30 @@ function renderTopbar() {
 }
 
 /* --------------------------------------------------------------- main */
+/* 3D camera: echarts-gl keeps the live camera in the grid3D view's orbit control and does not write it
+   back to the option, so read it from there before a chart is disposed and give it to the next one. */
+const cams = {};
+function readCam(c) {
+  try {
+    const v = (c._componentsViews || []).find(x => x && x._control && x._control.getAlpha);
+    return v ? {alpha: v._control.getAlpha(), beta: v._control.getBeta(), distance: v._control.getDistance()} : null;
+  } catch (e) { return null; }
+}
 function disposeCharts() {
-  for (const k in charts) { try { charts[k].dispose(); } catch (e) { /* already gone */ } delete charts[k]; }
+  for (const k in charts) {
+    const cam = readCam(charts[k]);
+    if (cam) cams[k] = cam;
+    try { charts[k].dispose(); } catch (e) { /* already gone */ }
+    delete charts[k];
+  }
+}
+/* 3D charts: the camera (grid3D.viewControl) is only sent when the chart is created; re-sending it on
+   every tick would snap the user's rotation/zoom back to the default once a second. */
+function set3d(id, build) {
+  const exists = !!charts[id];
+  const opt = build(cams[id]);
+  if (exists) delete opt.grid3D;
+  setChart(id, opt, false);
 }
 function chart(id) {
   const el = document.getElementById(id);
@@ -351,7 +373,17 @@ function chart(id) {
   return charts[id];
 }
 function setChart(id, opt, replace = false) { const c = chart(id); if (c) c.setOption(opt, replace); }
-addEventListener('resize', () => { for (const k in charts) charts[k].resize(); });
+/* 3D (WebGL) is slow and fiddly on small phones: below 480px it is not offered and the
+   saved choice falls back to the heatmap / 2D lanes (the saved preference itself is kept). */
+const SMALL = 480;
+const isSmall = () => innerWidth < SMALL;
+const cpuView = () => (isSmall() && S.cpuView === '3d' ? 'heatmap' : S.cpuView);
+const gpuView = () => (isSmall() ? '2d' : S.gpuView);
+let wasSmall = isSmall();
+addEventListener('resize', () => {
+  for (const k in charts) charts[k].resize();
+  if (isSmall() !== wasSmall) { wasSmall = isSmall(); if (S.tab === 'cpu' || S.tab === 'gpu') renderMain(); }
+});
 
 function label(e) { return e.kind === 'app' ? `${e.name} ×${e.last ? e.last.count : '…'}` : `${e.name} ${e.id}`; }
 function dot(e) { return `<span class="dot ${e.kind === 'app' ? 'sq' : ''}"></span>`; }
@@ -398,20 +430,20 @@ function renderMain() {
     const supported = S.meta ? S.meta.percore_supported : true;
     const overlap = S.sel.some(e => e.kind === 'pid' && S.sel.some(a => a.kind === 'app' && S.byPid.get(e.id) && S.byPid.get(e.id).app === a.id));
     h += `<div class="toolbar">
-      <div class="seg">${[['bars', 'Bars'], ['heatmap', 'Heatmap'], ['3d', '3D']].map(([k, l]) => `<button class="${k === S.cpuView ? 'on' : ''}" data-cpuview="${k}">${l}</button>`).join('')}</div>
+      <div class="seg">${[['bars', 'Bars'], ['heatmap', 'Heatmap'], ['3d', '3D']].filter(([k]) => !(k === '3d' && isSmall())).map(([k, l]) => `<button class="${k === cpuView() ? 'on' : ''}" data-cpuview="${k}">${l}</button>`).join('')}</div>
       <span class="faint" id="cpuinfo"></span><span style="flex:1"></span>
-      ${S.cpuView === 'heatmap' ? '<span class="ramp">0% <b></b> 100%</span>' : legend([...S.sel.map(e => [label(e), slotColor(e.slot)]), ...(S.cpuView === 'bars' ? [['whole system', '', 'ghost']] : [])])}
-      ${S.cpuView === '3d' ? `<button class="btn ${S.autoRotate ? 'primary' : ''}" data-act="rotate">⟲ Auto-rotate</button><button class="btn" data-act="resetview">Reset view</button>` : ''}
+      ${cpuView() === 'heatmap' ? '<span class="ramp">0% <b></b> 100%</span>' : legend([...S.sel.map(e => [label(e), slotColor(e.slot)]), ...(cpuView() === 'bars' ? [['whole system', '', 'ghost']] : [])])}
+      ${cpuView() === '3d' ? `<button class="btn ${S.autoRotate ? 'primary' : ''}" data-act="rotate">⟲ Auto-rotate</button><button class="btn" data-act="resetview">Reset view</button>` : ''}
     </div>
     ${supported ? '' : '<div class="note">Per-process usage per core is available on Linux only. Showing whole-system usage per core.</div>'}
     ${overlap ? '<div class="note">A selected process is also part of a selected app, so its CPU time is counted in both.</div>' : ''}
-    ${S.cpuView === 'heatmap'
+    ${cpuView() === 'heatmap'
       ? S.sel.map(e => `<div class="card"><div class="card-h"><h3><span style="color:${slotColor(e.slot)}">${e.kind === 'app' ? '■' : '●'}</span> ${esc(label(e))}</h3>
           <span class="sub">usage per core over the last ${HIST} samples</span></div>
           <div class="chart" id="c-heat${e.slot}" style="height:${Math.max(150, Math.min(420, cores() * 16 + 50))}px"></div></div>`).join('')
-      : `<div class="card"><div class="card-h"><h3>${S.cpuView === 'bars' ? 'Usage per logical core — now' : '3D · core × time × usage'}</h3>
-          <span class="sub">${S.cpuView === '3d' ? 'stacked by selection · drag to rotate · scroll to zoom' : 'stacked by selection · thread CPU time credited to the core it last ran on'}</span></div>
-          <div class="chart ${S.cpuView === '3d' ? 'xl' : 'tall'}" id="c-core"></div></div>`}
+      : `<div class="card"><div class="card-h"><h3>${cpuView() === 'bars' ? 'Usage per logical core — now' : '3D · core × time × usage'}</h3>
+          <span class="sub">${cpuView() === '3d' ? 'stacked by selection · drag to rotate · scroll to zoom' : 'stacked by selection · thread CPU time credited to the core it last ran on'}</span></div>
+          <div class="chart ${cpuView() === '3d' ? 'xl' : 'tall'}" id="c-core"></div></div>`}
     <div class="card"><div class="card-h"><h3>Cores</h3><span class="sub" id="coresub"></span></div><div class="cores" id="cores"></div></div>`;
   } else if (S.tab === 'gpu') {
     if (!gpuOk) {
@@ -420,12 +452,12 @@ function renderMain() {
         <p class="faint" style="margin:0">NVIDIA: install the driver and <span class="mono">pip install -r requirements-gpu.txt</span>. AMD: install ROCm with the <span class="mono">amdsmi</span> Python package. In Docker, run with the NVIDIA Container Toolkit (<span class="mono">--gpus all</span>).</p></div>`;
     } else {
       const devs = (S.sys && S.sys.gpus) || [];
-      h += `<div class="toolbar"><div class="seg"><button class="${S.gpuView === '2d' ? 'on' : ''}" data-gpuview="2d">2D</button><button class="${S.gpuView === '3d' ? 'on' : ''}" data-gpuview="3d">3D</button></div>
+      h += `<div class="toolbar">${isSmall() ? '' : `<div class="seg"><button class="${gpuView() === '2d' ? 'on' : ''}" data-gpuview="2d">2D</button><button class="${gpuView() === '3d' ? 'on' : ''}" data-gpuview="3d">3D</button></div>`}
         <span class="faint">${esc(S.meta.gpu.backend)}${S.meta.gpu.driver ? ' · driver ' + esc(S.meta.gpu.driver) : ''}</span><span style="flex:1"></span>${selLegend()}</div>
         ${devs.map((g, i) => `<div class="grid g-gpu">
           <div class="card gpu-dev"><div class="card-h"><h3>GPU${g.index} · ${esc(g.name)}</h3></div>
             <div class="chart" id="c-gauge${i}" style="height:150px"></div><div id="gpurows${i}"></div></div>
-          <div class="card"><div class="card-h"><h3>${S.gpuView === '3d' ? '3D · engine × time × utilisation' : 'Engine utilisation'}</h3><span class="sub">SM · memory controller · encoder · decoder</span></div>
+          <div class="card"><div class="card-h"><h3>${gpuView() === '3d' ? '3D · engine × time × utilisation' : 'Engine utilisation'}</h3><span class="sub">SM · memory controller · encoder · decoder</span></div>
             <div class="chart" id="c-eng${i}" style="height:290px"></div></div></div>`).join('')}
         <div class="grid g2">
           <div class="card"><div class="card-h"><h3>GPU memory by selection</h3><span class="sub">stacked</span></div><div class="chart" id="c-gmem"></div></div>
@@ -492,13 +524,13 @@ function updateCpuTab() {
   const info = $('#cpuinfo');
   const threads = S.sel.reduce((s, e) => s + ((e.last && e.last.threads) || 0), 0);
   if (info) info.textContent = `${S.sel.length} selected · ${threads} thread${threads === 1 ? '' : 's'} on ${n} logical cores`;
-  if (S.cpuView === 'bars') {
+  if (cpuView() === 'bars') {
     setChart('c-core', R.coreBars(C, sysCores, S.sel.map(e => ({name: label(e), color: slotColor(e.slot), values: now(e)}))), true);
-  } else if (S.cpuView === 'heatmap') {
+  } else if (cpuView() === 'heatmap') {
     S.sel.forEach(e => setChart('c-heat' + e.slot, R.heat(C, S.times, coreRows(e, n)), true));
   } else {
-    setChart('c-core', R.bars3d(C, S.times, S.sel.map(e => ({name: label(e), color: slotColor(e.slot), rows: coreRows(e, n)})),
-      {autoRotate: S.autoRotate}), false);
+    set3d('c-core', camera => R.bars3d(C, S.times, S.sel.map(e => ({name: label(e), color: slotColor(e.slot), rows: coreRows(e, n)})),
+      {autoRotate: S.autoRotate, camera}));
   }
   const rows = S.sel.map(e => coreRows(e, n));
   const sub = $('#coresub');
@@ -530,7 +562,8 @@ function updateGpuTab() {
       <span class="muted">Clock</span><span class="num">${g.clock != null ? g.clock + ' MHz' : '–'}</span>
       <span class="muted">Fan</span><span class="num">${g.fan != null ? g.fan + '%' : '–'}</span></div>`;
     const h = S.gpuHist[i];
-    if (h) setChart('c-eng' + i, S.gpuView === '3d' ? R.surface3d(C, S.times, h) : R.lanes(C, S.times, h, C.s[0]), S.gpuView !== '3d');
+    if (h && gpuView() === '3d') set3d('c-eng' + i, camera => R.surface3d(C, S.times, h, {camera}));
+    else if (h) setChart('c-eng' + i, R.lanes(C, S.times, h, C.s[0]), true);
   });
   setChart('c-gmem', R.line(C, S.times, S.sel.map(e => ({name: label(e), data: e.h.gmem, color: slotColor(e.slot), stack: 'm', area: true})),
     {fmt: v => fmtBytes(v)}), true);
@@ -700,7 +733,7 @@ function bindEvents() {
       const a = act.dataset.act;
       if (a === 'clear') { S.sel = []; selectionChanged(); }
       else if (a === 'rotate') { S.autoRotate = !S.autoRotate; renderMain(); }
-      else if (a === 'resetview') { renderMain(); }
+      else if (a === 'resetview') { disposeCharts(); for (const k in cams) delete cams[k]; renderMain(); }
     }
   });
   $('#main').addEventListener('change', e => {
