@@ -11,9 +11,12 @@ Resolution order for a process (first hit wins):
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import sys
+
+IS_WINDOWS = sys.platform == "win32"
 
 GENERIC_DIRS = {
     "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
@@ -111,7 +114,48 @@ def _exe_dir(exe: str | None) -> str | None:
 
 def base_key(p: dict) -> str:
     exe = p.get("exe")
-    return normalize_name(os.path.basename(exe) if exe else p.get("name", ""))
+    # split on both separators so Windows paths work whichever OS reads them
+    return normalize_name(re.split(r"[\\/]", exe)[-1] if exe else p.get("name", ""))
+
+
+@functools.lru_cache(maxsize=1024)
+def windows_product_name(exe: str | None) -> str | None:
+    """Friendly name from a Windows executable's version info ("Microsoft Edge" for msedge.exe).
+    Uses FileDescription (ProductName is often generic, e.g. "Microsoft Windows Operating System").
+    Pure ctypes, no pywin32. Returns None anywhere else or when the file has no version info."""
+    if not IS_WINDOWS or not exe:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        ver = ctypes.WinDLL("version")
+        ver.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        ver.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+        ver.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        ver.GetFileVersionInfoW.restype = wintypes.BOOL
+        ver.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.POINTER(wintypes.UINT)]
+        ver.VerQueryValueW.restype = wintypes.BOOL
+        size = ver.GetFileVersionInfoSizeW(exe, None)
+        if not size:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(exe, 0, size, buf):
+            return None
+        ptr, length = ctypes.c_void_p(), wintypes.UINT()
+        langs = []
+        if ver.VerQueryValueW(buf, "\\VarFileInfo\\Translation", ctypes.byref(ptr), ctypes.byref(length)) and length.value >= 4:
+            words = (ctypes.c_ushort * (length.value // 2)).from_address(ptr.value)
+            langs = [(words[i], words[i + 1]) for i in range(0, len(words) - 1, 2)]
+        for lang, cp in langs + [(0x0409, 0x04B0), (0x0409, 0x04E4)]:
+            key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
+            if ver.VerQueryValueW(buf, key, ctypes.byref(ptr), ctypes.byref(length)) and length.value > 1:
+                text = ctypes.wstring_at(ptr.value, length.value).rstrip("\x00").strip()
+                if text:
+                    return text
+    except Exception:  # any API/format surprise: fall back to the executable name
+        return None
+    return None
 
 
 def resolve_app(pid: int, procs: dict[int, dict], cgroup_reader=read_cgroup) -> tuple[str, str]:
@@ -138,7 +182,8 @@ def resolve_app(pid: int, procs: dict[int, dict], cgroup_reader=read_cgroup) -> 
         seen.add(parent["pid"])
         cur = parent
     k = base_key(cur)
-    return k, k
+    # on Windows show the product name; the key stays the executable so grouping is unchanged
+    return k, (windows_product_name(cur.get("exe")) or k) if IS_WINDOWS else k
 
 
 class AppResolver:

@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q -rs
+
+  setup-scripts:
+    name: setup script (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux / setup.sh,       os: ubuntu-latest,  shell: bash, wos: linux }
+          - { name: macos / setup.sh,       os: macos-latest,   shell: bash, wos: macos }
+          - { name: windows / pwsh,         os: windows-latest, shell: pwsh, wos: windows }
+          - { name: windows / powershell 5, os: windows-latest, shell: powershell, wos: windows }
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the installer non-interactively
+        if: matrix.shell == 'bash'
+        run: |
+          ./setup.sh --yes --where local --os ${{ matrix.wos }} --start manual --config-dir "$RUNNER_TEMP/cfg" | tee out.txt
+          grep -q '\[5/5\] Running the setup wizard' out.txt
+          grep -q 'wrote .*config.toml' out.txt
+          if grep -q $'\x1b' out.txt; then echo "escape codes in --yes output"; exit 1; fi
+      - name: Run the installer non-interactively
+        if: matrix.shell != 'bash'
+        run: |
+          ./setup.ps1 --yes --where local --os windows --start manual --config-dir "$env:RUNNER_TEMP\cfg" 6>&1 | Tee-Object -Variable out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $text = $out -join "`n"
+          if ($text -notmatch '\[5/5\] Running the setup wizard') { throw "step 5 missing" }
+          if ($text -notmatch 'wrote .*config\.toml') { throw "config.toml not written" }
+      - name: Start the installed app and hit it
+        if: matrix.shell == 'bash'
+        run: |
+          .venv/bin/python -m reswatch --port 8123 &
+          for i in $(seq 1 40); do curl -fsS http://127.0.0.1:8123/healthz && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:8123/api/processes | python -c "import json,sys; d=json.load(sys.stdin); assert len(d) > 3, d; print(len(d), 'processes')"
+      - name: Start the installed app and hit it
+        if: matrix.shell != 'bash'
+        run: |
+          $p = Start-Process -FilePath .venv\Scripts\python.exe -ArgumentList '-m','reswatch','--port','8123' -PassThru -WindowStyle Hidden
+          $ok = $false
+          foreach ($i in 1..40) { try { Invoke-RestMethod http://127.0.0.1:8123/healthz | Out-Null; $ok = $true; break } catch { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok) { throw "server did not start" }
+          $procs = Invoke-RestMethod http://127.0.0.1:8123/api/processes
+          if ($procs.Count -le 3) { throw "too few processes: $($procs.Count)" }
+          "$($procs.Count) processes"
+          Stop-Process -Id $p.Id
+
+  docker:
+    name: docker (--pid=host, compose + login)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: scripts/ci/docker-smoke.sh
+
+  proxy-configs:
+    name: proxy configs (nginx, Caddy, Apache, Traefik, Cloudflare)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: scripts/ci/check-proxy-configs.sh
+
+  browser:
+    name: browser smoke test (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --check static/app.js && node --check static/charts.js && node --check tests/e2e/smoke.cjs
+      - run: python -m pip install -r requirements.txt
+      - name: Install Playwright + Chromium
+        working-directory: tests/e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Start servers (no login on :8000, login on :8002) and two busy processes
+        run: |
+          export RESWATCH_CONFIG_DIR="$RUNNER_TEMP/cfg"
+          echo 'ci-browser-password' | python -m reswatch set-password --username admin --password-stdin
+          python -m reswatch --port 8000 > "$RUNNER_TEMP/srv.log" 2>&1 &
+          python -m reswatch --port 8002 --auth on > "$RUNNER_TEMP/srv-auth.log" 2>&1 &
+          python -c "while True: pass" & echo "BURN1=$!" >> "$GITHUB_ENV"
+          python -c "while True: pass" & echo "BURN2=$!" >> "$GITHUB_ENV"
+          for p in 8000 8002; do for i in $(seq 1 40); do curl -fsS http://127.0.0.1:$p/healthz && break; sleep 0.5; done; done
+      - name: Smoke test, no login
+        working-directory: tests/e2e
+        run: RW_PIDS="$BURN1,$BURN2" RW_SHOTS="$RUNNER_TEMP/shots" node smoke.cjs http://127.0.0.1:8000
+      - name: Smoke test, built-in login
+        working-directory: tests/e2e
+        run: RW_USER=admin RW_PASS=ci-browser-password RW_NO_3D=1 node smoke.cjs http://127.0.0.1:8002
+      - name: Upload screenshots and server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke
+          path: |
+            ${{ runner.temp }}/shots
+            ${{ runner.temp }}/srv*.log
+          if-no-files-found: ignore

@@ -93,7 +93,7 @@
   }
 
   /* 3D bars: core x time x %, one stacked series per entity: ents = [{name, color, rows[c][t]}] */
-  function bars3d(C, times, ents, {autoRotate = false} = {}) {
+  function bars3d(C, times, ents, {autoRotate = false, camera} = {}) {
     const step = times.length > 30 ? 2 : 1;
     const labels = relLabels(times).filter((_, t) => t % step === 0);
     const ncores = ents.length ? ents[0].rows.length : 0;
@@ -118,14 +118,14 @@
       zAxis3D: {type: 'value', name: '%', min: 0, axisLabel: {color: C.text3}, nameTextStyle: {color: C.text2}},
       grid3D: {boxWidth: 150, boxDepth: 110, boxHeight: 60,
         axisLine: {lineStyle: {color: C.text3}}, splitLine: {lineStyle: {color: C.grid}}, axisPointer: {lineStyle: {color: C.text2}},
-        viewControl: {alpha: 22, beta: 38, distance: 215, autoRotate, autoRotateSpeed: 6},
+        viewControl: {alpha: 22, beta: 38, distance: 215, ...(camera || {}), autoRotate, autoRotateSpeed: 6},
         light: {main: {intensity: 1.15, shadow: true, alpha: 40, beta: 30}, ambient: {intensity: 0.35}}},
       series,
     };
   }
 
   /* 3D surface: lanes{name: values[]} */
-  function surface3d(C, times, lanes) {
+  function surface3d(C, times, lanes, {camera} = {}) {
     const names = Object.keys(lanes), data = [];
     names.forEach((k, l) => lanes[k].forEach((v, t) => data.push([t, l, v == null ? 0 : v])));
     return {
@@ -134,7 +134,7 @@
       yAxis3D: {type: 'category', name: 'engine', data: names, axisLabel: {color: C.text3}},
       zAxis3D: {type: 'value', name: '%', max: 100, min: 0, axisLabel: {color: C.text3}},
       grid3D: {boxWidth: 170, boxDepth: 60, boxHeight: 50, axisLine: {lineStyle: {color: C.text3}},
-        splitLine: {lineStyle: {color: C.grid}}, viewControl: {alpha: 22, beta: 30, distance: 210},
+        splitLine: {lineStyle: {color: C.grid}}, viewControl: {alpha: 22, beta: 30, distance: 210, ...(camera || {})},
         light: {main: {intensity: 1.1}, ambient: {intensity: 0.4}}},
       series: [{type: 'surface', data, wireframe: {show: true, lineStyle: {color: C.surface, width: 0.5}}, shading: 'lambert'}],
     };

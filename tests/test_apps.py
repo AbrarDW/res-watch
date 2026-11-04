@@ -74,7 +74,13 @@ def test_spawned_children_form_one_app():
            "time.sleep(60)"
     parent = subprocess.Popen([sys.executable, "-c", code])
     try:
-        time.sleep(1.0)
+        import psutil
+        # wait until all three children run: starting Python processes is slow on Windows runners,
+        # and measuring while they start makes any CPU threshold timing-dependent
+        deadline = time.time() + 20
+        while len(psutil.Process(parent.pid).children()) < 3 and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.5)
         c = Collector(gpu=NullGpu())
         c.tick()
         time.sleep(1.0)
@@ -84,8 +90,40 @@ def test_spawned_children_form_one_app():
         assert {p["app"] for p in kids} == {"python"}
         ent = c.entity(snap, "pid", parent.pid, children=True)
         assert ent["count"] == 4
-        assert ent["cpu"] > 75 * min(3, os.cpu_count() or 1)  # three burn loops
+        # the family total is exactly the sum of its members ...
+        members = [parent.pid] + [k["pid"] for k in kids]
+        assert ent["cpu"] == pytest.approx(sum(snap["procs"][m]["cpu"] or 0 for m in members), abs=0.05)
+        # ... and the three busy loops are clearly busy (loose floor: CI runners share their cores)
+        assert ent["cpu"] > 100
     finally:
         for p in __import__("psutil").Process(parent.pid).children():
             p.kill()
         parent.kill()
+
+
+def test_windows_display_name_is_used_but_key_unchanged(monkeypatch):
+    from reswatch import apps
+    monkeypatch.setattr(apps, "IS_WINDOWS", True)
+    monkeypatch.setattr(apps, "windows_product_name", lambda exe: "Microsoft Edge" if exe and "msedge" in exe else None)
+    procs = {10: {"pid": 10, "ppid": 1, "name": "msedge.exe", "exe": "C:\\Program Files\\Microsoft\\Edge\\msedge.exe"},
+             11: {"pid": 11, "ppid": 10, "name": "msedge.exe", "exe": "C:\\Program Files\\Microsoft\\Edge\\msedge.exe"},
+             20: {"pid": 20, "ppid": 1, "name": "tool.exe", "exe": "C:\\tools\\tool.exe"}}
+    no_cg = lambda pid: ""
+    assert apps.resolve_app(11, procs, no_cg) == ("msedge", "Microsoft Edge")
+    assert apps.resolve_app(20, procs, no_cg) == ("tool", "tool")     # no version info: exe name
+
+
+def test_windows_product_name_is_none_off_windows():
+    from reswatch import apps
+    if not apps.IS_WINDOWS:
+        assert apps.windows_product_name(sys.executable) is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows version-info API")
+def test_windows_product_name_reads_real_files():
+    from reswatch import apps
+    notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "notepad.exe")
+    name = apps.windows_product_name(notepad)
+    assert name and "notepad" in name.lower(), name
+    assert apps.windows_product_name(sys.executable)          # python.exe has version info ("Python")
+    assert apps.windows_product_name(r"C:\does\not\exist.exe") is None

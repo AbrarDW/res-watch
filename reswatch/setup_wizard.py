@@ -219,6 +219,24 @@ def detect_os() -> str:
     return {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
 
 
+def has_ipv6() -> bool:
+    """True when this machine can listen on IPv6. Proxy configs that add `listen [::]:...` refuse to
+    start on hosts with IPv6 disabled, so those lines are only generated when it works.
+    RESWATCH_IPV6=0/1 overrides the check."""
+    forced = os.environ.get("RESWATCH_IPV6")
+    if forced in ("0", "1"):
+        return forced == "1"
+    import socket
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::", 0))
+        return True
+    except OSError:
+        return False
+
+
 def has_nvidia() -> bool:
     return shutil.which("nvidia-smi") is not None
 
@@ -403,8 +421,12 @@ def proxy_files(plan: Plan, deploy: Path, proxy, domain, base, port, https, run)
                               "Caddy then gets the certificate automatically.")
     elif proxy == "nginx":
         redirect = f"\n    location = {base} {{ return 301 {base}/; }}\n" if base else ""
-        plan.files.append(Out(deploy / "nginx.conf", render("nginx.conf", domain=domain, location=loc, port=port,
-                                                              nginx_base_redirect=redirect), "nginx site"))
+        v6 = has_ipv6()
+        plan.files.append(Out(deploy / "nginx.conf", render(
+            "nginx.conf", domain=domain, location=loc, port=port, nginx_base_redirect=redirect,
+            listen6_80="    listen [::]:80;\n" if v6 else "    # listen [::]:80;      (IPv6 was not available when this was generated)\n",
+            listen6_443="    listen [::]:443 ssl;\n" if v6 else "    # listen [::]:443 ssl; (IPv6 was not available when this was generated)\n"),
+            "nginx site"))
         plan.steps.append("nginx: install deploy/nginx.conf (instructions at the top of the file)")
         if https == "docs":
             plan.steps.append(f"HTTPS: point DNS for {domain} at this server, then\n"

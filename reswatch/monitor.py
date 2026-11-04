@@ -14,17 +14,21 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
 
 import psutil
 
 from . import gpu as gpu_mod
-from .apps import AppResolver
+from .apps import AppResolver, base_key
 from .percore import PerCoreTracker
 
 IS_LINUX = sys.platform.startswith("linux")
 SYSTEM_USERS = {"root", "system", "nt authority\\system", "local service", "network service",
                 "nt authority\\local service", "nt authority\\network service"}
 MAX_MEMBERS = 200
+MAX_PSS = 400           # cap on processes whose PSS is sampled per tick
+HISTORY = 60            # samples kept per process for backfilling new selections
+HIST_FIELDS = ("cpu", "rss", "ior", "iow", "gpu", "gmem")
 
 
 def _current_user() -> str:
@@ -46,6 +50,10 @@ class Collector:
         self._static: dict[tuple[int, float], dict] = {}
         self._prev: dict[int, tuple[float, float, int | None, int | None]] = {}
         self.snapshot: dict = {"ts": 0, "system": {}, "procs": {}, "percore": {}}
+        # history: tick numbers + timestamps, and per process the values it had at each tick
+        self.tick_no = 0
+        self.hist_ts: deque = deque(maxlen=HISTORY)                 # (tick_no, ts)
+        self.hist: dict[int, tuple[float, deque]] = {}               # pid -> (started, deque[(tick_no, *values)])
         self.total_mem = psutil.virtual_memory().total
         psutil.cpu_percent(percpu=True)  # prime system counters
 
@@ -170,6 +178,7 @@ class Collector:
 
         for rec in procs.values():
             rec["system"] = self._is_system(rec)
+            rec["exe_key"] = "kernel" if rec["kernel"] else base_key(rec)
         self.resolver.assign(procs)
 
         gpu_procs = self.gpu.per_process()
@@ -184,10 +193,26 @@ class Collector:
         for kind, ident, children in specs:
             watched.update(self.resolve_pids(procs, kind, ident, children))
         percore = self.percore.sample(sorted(watched), now) if watched else {}
+        if IS_LINUX:
+            self._sample_pss(procs, watched)
 
         system = self._system(procs)
         self.snapshot = {"ts": time.time(), "system": system, "procs": procs, "percore": percore}
+        self._record(procs, self.snapshot["ts"])
         return self.snapshot
+
+    @staticmethod
+    def _sample_pss(procs: dict, pids) -> None:
+        """PSS (shared pages split between the processes sharing them) for watched processes only:
+        it reads /proc/<pid>/smaps_rollup, too slow to do for every process every tick."""
+        for pid in sorted(pids)[:MAX_PSS]:
+            rec = procs.get(pid)
+            if rec is None:
+                continue
+            try:
+                rec["pss"] = psutil.Process(pid).memory_full_info().pss
+            except (psutil.Error, OSError, AttributeError):
+                pass
 
     def _system(self, procs) -> dict:
         per_core = psutil.cpu_percent(percpu=True)
@@ -214,6 +239,39 @@ class Collector:
             "gpus": self.gpu.devices(),
         }
 
+    def _record(self, procs: dict, ts: float) -> None:
+        """Remember this tick's values for every process (compact: a tuple per process per tick)."""
+        self.tick_no += 1
+        self.hist_ts.append((self.tick_no, ts))
+        hist = {}
+        for pid, rec in procs.items():
+            old = self.hist.get(pid)
+            rows = old[1] if old and old[0] == rec["started"] else deque(maxlen=HISTORY)
+            rows.append((self.tick_no, *(rec.get(f) for f in HIST_FIELDS)))
+            hist[pid] = (rec["started"], rows)
+        self.hist = hist
+
+    def backfill(self, kind: str, ident, children: bool = False) -> dict:
+        """History of an entity over the retained ticks, summed over its *current* members.
+        Per-core history is not kept (it is only sampled for watched processes)."""
+        with self.lock:
+            snap = self.snapshot
+            pids = self.resolve_pids(snap["procs"], kind, ident, children)
+            index = {tick: i for i, (tick, _) in enumerate(self.hist_ts)}
+            out = {f: [None] * len(index) for f in HIST_FIELDS}
+            for pid in pids:
+                entry = self.hist.get(pid)
+                if not entry:
+                    continue
+                for row in entry[1]:
+                    i = index.get(row[0])
+                    if i is None:
+                        continue
+                    for f, v in zip(HIST_FIELDS, row[1:]):
+                        if v is not None:
+                            out[f][i] = (out[f][i] or 0) + v
+            return {"id": f"{kind}:{ident}", "ts": [ts for _, ts in self.hist_ts], **out}
+
     def meta(self) -> dict:
         return {
             "hostname": socket.gethostname(),
@@ -223,6 +281,7 @@ class Collector:
             "cores": self.ncpu,
             "cores_physical": self.ncpu_phys,
             "percore_supported": self.percore.supported,
+            "pss_supported": IS_LINUX,
             "gpu": self.gpu.info(),
         }
 
@@ -240,9 +299,13 @@ class Collector:
                     stack.append(c)
         return out
 
+    # group kinds a client can subscribe to, and the process field each one matches on
+    GROUP_FIELDS = {"app": "app", "exe": "exe_key", "user": "user"}
+
     def resolve_pids(self, procs: dict, kind: str, ident, children: bool = False) -> list[int]:
-        if kind == "app":
-            return [pid for pid, p in procs.items() if p.get("app") == ident]
+        field = self.GROUP_FIELDS.get(kind)
+        if field:
+            return [pid for pid, p in procs.items() if (p.get(field) or "?") == ident]
         pid = int(ident)
         if pid not in procs:
             return []
@@ -264,7 +327,7 @@ class Collector:
             "gone": False,
             "cpu": total("cpu"), "rss": total("rss"), "mem": total("mem"),
             "threads": total("threads"), "ior": total("ior"), "iow": total("iow"),
-            "gpu": total("gpu"), "gmem": total("gmem"),
+            "gpu": total("gpu"), "gmem": total("gmem"), "pss": total("pss"),
         })
         cores = None
         if self.percore.supported:
@@ -281,7 +344,7 @@ class Collector:
             ent["denied"] = p["denied"]
         else:
             first = procs[pids[0]]
-            ent["name"] = first.get("app_name") or ident
+            ent["name"] = (first.get("app_name") or ident) if kind == "app" else ident
             ent["users"] = sorted({procs[p]["user"] or "?" for p in pids})
             ent["started"] = min(procs[p]["started"] for p in pids)
         members = sorted(pids, key=lambda p: (procs[p]["cpu"] or 0, procs[p]["rss"] or 0), reverse=True)
@@ -296,7 +359,7 @@ class Collector:
     def process_list(self, snap: dict | None = None) -> list[dict]:
         snap = snap or self.snapshot
         keep = ("pid", "ppid", "name", "user", "cpu", "rss", "mem", "threads", "status", "gpu", "gmem",
-                "app", "app_name", "kernel", "system", "denied", "cmd")
+                "app", "app_name", "exe_key", "kernel", "system", "denied", "cmd")
         return [{k: p.get(k) for k in keep} for p in snap["procs"].values()]
 
     def app_list(self, snap: dict | None = None) -> list[dict]:
