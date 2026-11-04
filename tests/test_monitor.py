@@ -78,3 +78,27 @@ def test_group_kinds_exe_and_user():
         assert listed[os.getpid()]["exe_key"] == "python"
     finally:
         child.kill()
+
+
+def test_backfill_returns_recent_history():
+    c = make()
+    for _ in range(4):
+        c.tick()
+        time.sleep(0.05)
+    bf = c.backfill("pid", os.getpid())
+    assert bf["id"] == f"pid:{os.getpid()}"
+    assert len(bf["ts"]) == 4 and bf["ts"] == sorted(bf["ts"])
+    assert all(v is not None and v > 0 for v in bf["rss"])
+    app = c.backfill("app", "python")
+    assert all(a >= b for a, b in zip(app["rss"], bf["rss"]))   # app sums >= one member
+    assert c.backfill("pid", 2 ** 22 + 1)["rss"] == [None] * 4   # unknown pid: all gaps
+
+
+def test_history_is_bounded():
+    from reswatch.monitor import HISTORY
+    c = make()
+    for _ in range(HISTORY + 5):
+        c._record({1: {"started": 1.0, "cpu": 1.0, "rss": 2, "ior": 0, "iow": 0, "gpu": None, "gmem": None}}, time.time())
+    assert len(c.hist_ts) == HISTORY and len(c.hist[1][1]) == HISTORY
+    c._record({}, time.time())          # process gone -> its history is dropped
+    assert c.hist == {}

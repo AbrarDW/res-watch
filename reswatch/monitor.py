@@ -14,6 +14,7 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
 
 import psutil
 
@@ -25,6 +26,8 @@ IS_LINUX = sys.platform.startswith("linux")
 SYSTEM_USERS = {"root", "system", "nt authority\\system", "local service", "network service",
                 "nt authority\\local service", "nt authority\\network service"}
 MAX_MEMBERS = 200
+HISTORY = 60            # samples kept per process for backfilling new selections
+HIST_FIELDS = ("cpu", "rss", "ior", "iow", "gpu", "gmem")
 
 
 def _current_user() -> str:
@@ -46,6 +49,10 @@ class Collector:
         self._static: dict[tuple[int, float], dict] = {}
         self._prev: dict[int, tuple[float, float, int | None, int | None]] = {}
         self.snapshot: dict = {"ts": 0, "system": {}, "procs": {}, "percore": {}}
+        # history: tick numbers + timestamps, and per process the values it had at each tick
+        self.tick_no = 0
+        self.hist_ts: deque = deque(maxlen=HISTORY)                 # (tick_no, ts)
+        self.hist: dict[int, tuple[float, deque]] = {}               # pid -> (started, deque[(tick_no, *values)])
         self.total_mem = psutil.virtual_memory().total
         psutil.cpu_percent(percpu=True)  # prime system counters
 
@@ -188,6 +195,7 @@ class Collector:
 
         system = self._system(procs)
         self.snapshot = {"ts": time.time(), "system": system, "procs": procs, "percore": percore}
+        self._record(procs, self.snapshot["ts"])
         return self.snapshot
 
     def _system(self, procs) -> dict:
@@ -214,6 +222,39 @@ class Collector:
             "proc_count": len(procs),
             "gpus": self.gpu.devices(),
         }
+
+    def _record(self, procs: dict, ts: float) -> None:
+        """Remember this tick's values for every process (compact: a tuple per process per tick)."""
+        self.tick_no += 1
+        self.hist_ts.append((self.tick_no, ts))
+        hist = {}
+        for pid, rec in procs.items():
+            old = self.hist.get(pid)
+            rows = old[1] if old and old[0] == rec["started"] else deque(maxlen=HISTORY)
+            rows.append((self.tick_no, *(rec.get(f) for f in HIST_FIELDS)))
+            hist[pid] = (rec["started"], rows)
+        self.hist = hist
+
+    def backfill(self, kind: str, ident, children: bool = False) -> dict:
+        """History of an entity over the retained ticks, summed over its *current* members.
+        Per-core history is not kept (it is only sampled for watched processes)."""
+        with self.lock:
+            snap = self.snapshot
+            pids = self.resolve_pids(snap["procs"], kind, ident, children)
+            index = {tick: i for i, (tick, _) in enumerate(self.hist_ts)}
+            out = {f: [None] * len(index) for f in HIST_FIELDS}
+            for pid in pids:
+                entry = self.hist.get(pid)
+                if not entry:
+                    continue
+                for row in entry[1]:
+                    i = index.get(row[0])
+                    if i is None:
+                        continue
+                    for f, v in zip(HIST_FIELDS, row[1:]):
+                        if v is not None:
+                            out[f][i] = (out[f][i] or 0) + v
+            return {"id": f"{kind}:{ident}", "ts": [ts for _, ts in self.hist_ts], **out}
 
     def meta(self) -> dict:
         return {

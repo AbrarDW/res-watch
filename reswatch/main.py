@@ -213,8 +213,13 @@ def create_app(settings: Settings, credentials=None, collector: Collector | None
                             specs.append(("pid", int(ident), children))
                         elif kind in Collector.GROUP_FIELDS and isinstance(ident, str) and len(ident) < 200:
                             specs.append((kind, ident, False))
+                    new = [sp for sp in specs if sp not in c.specs]
                     c.specs = specs
                     c.every = max(1, min(60, int(msg.get("every") or 1)))
+                    if new:  # fill the charts of newly selected items with the history the server kept
+                        col = get_collector()
+                        await websocket.send_text(json.dumps({"type": "backfill", "entities": [
+                            col.backfill(k, i, ch) for k, i, ch in new]}, separators=(",", ":")))
         except (WebSocketDisconnect, RuntimeError):
             pass
         except (ValueError, TypeError):

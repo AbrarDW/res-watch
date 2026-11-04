@@ -275,6 +275,7 @@ function toggleSel(kind, id) {
   selectionChanged();
 }
 function selectionChanged() {
+  LS.set('sel', S.sel.map(e => ({kind: e.kind, id: e.id})));
   subscribe();
   renderSidebar();
   renderMain();
@@ -298,6 +299,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'hello') { S.meta = Object.assign(S.meta || {}, msg); }
     else if (msg.type === 'tick') onTick(msg);
+    else if (msg.type === 'backfill') onBackfill(msg);
   };
   ws.onclose = ev => {
     setConn(false);
@@ -310,6 +312,31 @@ function setConn(ok) {
   const c = $('#conn');
   c.classList.toggle('ok', ok);
   c.title = ok ? 'Live' : 'Reconnecting…';
+}
+
+/* History the server kept for newly selected items. Merge it into the shared timeline: the times become
+   the union of what we have and what the server sent (newest HIST kept), and every series is re-laid
+   onto those times; values we already have win over backfilled ones. */
+function onBackfill(msg) {
+  if (S.paused || !msg.entities.length) return;
+  const times = [...new Set([...S.times, ...msg.entities.flatMap(b => b.ts)])].sort((a, b) => a - b).slice(-HIST);
+  const remap = (oldTimes, arr) => {
+    const m = new Map(oldTimes.map((t, i) => [t, arr[i]]));
+    return times.map(t => (m.has(t) ? m.get(t) : null));
+  };
+  const old = S.times;
+  for (const e of S.sel) {
+    for (const k in e.h) e.h[k] = remap(old, e.h[k]);
+    const b = msg.entities.find(x => x.id === entKey(e.kind, e.id));
+    if (!b) continue;
+    const at = new Map(b.ts.map((t, i) => [t, i]));
+    for (const k of ['cpu', 'rss', 'ior', 'iow', 'gpu', 'gmem']) {
+      e.h[k] = e.h[k].map((v, i) => (v != null ? v : (at.has(times[i]) ? b[k][at.get(times[i])] : null)));
+    }
+  }
+  S.gpuHist.forEach(h => { for (const k in h) h[k] = remap(old, h[k]); });
+  S.times = times;
+  updateMain();
 }
 
 function onTick(msg) {
@@ -809,6 +836,13 @@ async function boot() {
   S.sys = await api('api/system').catch(() => null);
   renderTopbar();
   await refreshProcs();
+  // restore the previous selection (processes that have exited since are dropped)
+  for (const {kind, id} of LS.get('sel', [])) {
+    if (kind === 'pid' && !S.byPid.has(+id)) continue;
+    if (kind !== 'pid' && !GROUPS[kind]) continue;
+    addSel(kind, id);
+  }
+  renderSidebar();
   renderMain();
   connect();
   setInterval(refreshProcs, 3000);
