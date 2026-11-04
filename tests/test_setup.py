@@ -17,7 +17,7 @@ def run(tmp_path, **answers):
         argv += [f"--{k.replace('_', '-')}", str(v)]
     args = p.parse_args(argv)
     assert setup_wizard.run(args) == 0
-    files = sorted(str(f.relative_to(tmp_path)) for f in tmp_path.rglob("*") if f.is_file())
+    files = sorted(f.relative_to(tmp_path).as_posix() for f in tmp_path.rglob("*") if f.is_file())
     return files, read_toml(tmp_path / "cfg" / "config.toml")
 
 
@@ -167,3 +167,13 @@ def test_numbered_file_lines_and_quiet_yes_mode(tmp_path, capsys):
     assert "\x1b" not in out                          # no escape codes in CI logs
     run(tmp_path, where="vps", run="systemd", proxy="nginx", domain="x.example.com", https="have", auth="builtin")
     assert "[1/3] unchanged" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("v6,expect_active", [("1", True), ("0", False)])
+def test_nginx_ipv6_listen_only_when_available(tmp_path, monkeypatch, v6, expect_active):
+    monkeypatch.setenv("RESWATCH_IPV6", v6)
+    run(tmp_path, where="vps", run="systemd", proxy="nginx", domain="x.example.com", https="have", auth="builtin")
+    conf = text(tmp_path, "out/deploy/nginx.conf")
+    active = [l.strip() for l in conf.splitlines() if l.strip().startswith("listen [::]")]
+    assert bool(active) == expect_active
+    assert "listen 80;" in conf and "listen 443 ssl;" in conf
