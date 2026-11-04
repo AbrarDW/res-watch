@@ -58,3 +58,23 @@ def test_process_detail():
     d = c.process_detail(os.getpid())
     assert d["pid"] == os.getpid() and d["cmdline"]
     assert c.process_detail(2 ** 22 + 12345) is None
+
+
+def test_group_kinds_exe_and_user():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        c = make()
+        time.sleep(0.2)
+        snap = c.tick()
+        me = snap["procs"][os.getpid()]
+        assert me["exe_key"] == "python"
+        by_exe = c.entity(snap, "exe", "python")
+        assert by_exe["count"] >= 2 and by_exe["name"] == "python"
+        assert child.pid in [m["pid"] for m in by_exe["members"]]
+        by_user = c.entity(snap, "user", me["user"])
+        assert by_user["count"] >= by_exe["count"] - 1 and by_user["name"] == me["user"]
+        assert c.entity(snap, "user", "no-such-user-xyz")["gone"] is True
+        listed = {p["pid"]: p for p in c.process_list(snap)}
+        assert listed[os.getpid()]["exe_key"] == "python"
+    finally:
+        child.kill()

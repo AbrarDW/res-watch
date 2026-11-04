@@ -211,8 +211,8 @@ def create_app(settings: Settings, credentials=None, collector: Collector | None
                         kind, ident = e.get("kind"), e.get("id")
                         if kind == "pid" and str(ident).isdigit():
                             specs.append(("pid", int(ident), children))
-                        elif kind == "app" and isinstance(ident, str) and len(ident) < 200:
-                            specs.append(("app", ident, False))
+                        elif kind in Collector.GROUP_FIELDS and isinstance(ident, str) and len(ident) < 200:
+                            specs.append((kind, ident, False))
                     c.specs = specs
                     c.every = max(1, min(60, int(msg.get("every") or 1)))
         except (WebSocketDisconnect, RuntimeError):

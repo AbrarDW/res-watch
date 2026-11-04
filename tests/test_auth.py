@@ -185,3 +185,15 @@ def test_settings_layering(tmp_path):
     assert (s.port, s.base_path) == (9100, "/sub")
     s = load_settings({"config_dir": str(tmp_path), "port": 9200}, env={"RESWATCH_PORT": "9100"})
     assert s.port == 9200
+
+
+def test_ws_accepts_group_kinds(tmp_path):
+    with make_client(tmp_path) as c:
+        login(c)
+        user = c.get("/api/processes").json()[0]["user"] or "?"
+        with c.websocket_connect("/ws") as ws:
+            json.loads(ws.receive_text())  # hello
+            ws.send_text(json.dumps({"type": "subscribe", "entities": [
+                {"kind": "exe", "id": "python"}, {"kind": "user", "id": user}, {"kind": "bogus", "id": "x"}]}))
+            tick = json.loads(ws.receive_text())
+            assert [e["id"] for e in tick["entities"]] == ["exe:python", f"user:{user}"]

@@ -18,7 +18,7 @@ import time
 import psutil
 
 from . import gpu as gpu_mod
-from .apps import AppResolver
+from .apps import AppResolver, base_key
 from .percore import PerCoreTracker
 
 IS_LINUX = sys.platform.startswith("linux")
@@ -170,6 +170,7 @@ class Collector:
 
         for rec in procs.values():
             rec["system"] = self._is_system(rec)
+            rec["exe_key"] = "kernel" if rec["kernel"] else base_key(rec)
         self.resolver.assign(procs)
 
         gpu_procs = self.gpu.per_process()
@@ -240,9 +241,13 @@ class Collector:
                     stack.append(c)
         return out
 
+    # group kinds a client can subscribe to, and the process field each one matches on
+    GROUP_FIELDS = {"app": "app", "exe": "exe_key", "user": "user"}
+
     def resolve_pids(self, procs: dict, kind: str, ident, children: bool = False) -> list[int]:
-        if kind == "app":
-            return [pid for pid, p in procs.items() if p.get("app") == ident]
+        field = self.GROUP_FIELDS.get(kind)
+        if field:
+            return [pid for pid, p in procs.items() if (p.get(field) or "?") == ident]
         pid = int(ident)
         if pid not in procs:
             return []
@@ -281,7 +286,7 @@ class Collector:
             ent["denied"] = p["denied"]
         else:
             first = procs[pids[0]]
-            ent["name"] = first.get("app_name") or ident
+            ent["name"] = (first.get("app_name") or ident) if kind == "app" else ident
             ent["users"] = sorted({procs[p]["user"] or "?" for p in pids})
             ent["started"] = min(procs[p]["started"] for p in pids)
         members = sorted(pids, key=lambda p: (procs[p]["cpu"] or 0, procs[p]["rss"] or 0), reverse=True)
@@ -296,7 +301,7 @@ class Collector:
     def process_list(self, snap: dict | None = None) -> list[dict]:
         snap = snap or self.snapshot
         keep = ("pid", "ppid", "name", "user", "cpu", "rss", "mem", "threads", "status", "gpu", "gmem",
-                "app", "app_name", "kernel", "system", "denied", "cmd")
+                "app", "app_name", "exe_key", "kernel", "system", "denied", "cmd")
         return [{k: p.get(k) for k in keep} for p in snap["procs"].values()]
 
     def app_list(self, snap: dict | None = None) -> list[dict]:
