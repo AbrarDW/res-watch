@@ -74,7 +74,13 @@ def test_spawned_children_form_one_app():
            "time.sleep(60)"
     parent = subprocess.Popen([sys.executable, "-c", code])
     try:
-        time.sleep(1.0)
+        import psutil
+        # wait until all three children run: starting Python processes is slow on Windows runners,
+        # and measuring while they start makes any CPU threshold timing-dependent
+        deadline = time.time() + 20
+        while len(psutil.Process(parent.pid).children()) < 3 and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.5)
         c = Collector(gpu=NullGpu())
         c.tick()
         time.sleep(1.0)
@@ -84,7 +90,11 @@ def test_spawned_children_form_one_app():
         assert {p["app"] for p in kids} == {"python"}
         ent = c.entity(snap, "pid", parent.pid, children=True)
         assert ent["count"] == 4
-        assert ent["cpu"] > 50 * min(3, os.cpu_count() or 1)  # three burn loops (CI runners can be busy)
+        # the family total is exactly the sum of its members ...
+        members = [parent.pid] + [k["pid"] for k in kids]
+        assert ent["cpu"] == pytest.approx(sum(snap["procs"][m]["cpu"] or 0 for m in members), abs=0.05)
+        # ... and the three busy loops are clearly busy (loose floor: CI runners share their cores)
+        assert ent["cpu"] > 100
     finally:
         for p in __import__("psutil").Process(parent.pid).children():
             p.kill()
